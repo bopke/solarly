@@ -17,13 +17,5 @@ export { LoadingSkeleton } from './LoadingSkeleton'
 export type { LoadingSkeletonProps } from './LoadingSkeleton'
 export { Heatmap } from './Heatmap'
 export type { HeatmapProps } from './Heatmap'
-export {
-  TABS_BY_MODE,
-  TAB_LABELS,
-  SIDEBAR_BREAKPOINT_PX,
-  SIDEBAR_BREAKPOINT_QUERY,
-} from './types'
-export type { Mode, TabId } from './types'
-export { LocationPicker } from './LocationPicker'
-export type { LocationPickerProps, ResolvedLocation } from './LocationPicker'
-export { approximateTimezone, formatUtcOffset } from './timezone'
+export { DailyChart } from './DailyChart'
+export type { DailyChartProps } from './DailyChart'
