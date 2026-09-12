@@ -50,6 +50,93 @@ const defaultDeps: RunLiveSimulationDeps = {
   fetchForecast: (lat, lon) => fetchOpenMeteoForecast(lat, lon),
 }
 
+/**
+ * Validates `location` and `systemConfig` before any physics runs.
+ *
+ * Without this, a non-finite `SystemConfig` field (e.g. `NaN` from a
+ * partially-cleared numeric form input, per issue #13) propagates silently
+ * into `HourlyPowerPoint.watts`, breaking that field's documented
+ * "non-negative" contract; a negative percentage (e.g.
+ * `manualShadingPercent: -20`) silently *inflates* output instead of being
+ * rejected, since only the low end is clamped downstream; and an
+ * out-of-range latitude/longitude produces a silent all-zero series (sun
+ * position degenerates rather than erroring) instead of a clear failure. See
+ * PR #34 review finding #1.
+ */
+function validateInput(location: Location, systemConfig: SystemConfig): void {
+  const { lat, lon } = location
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    throw new Error(
+      `Invalid location.lat: must be a finite number in [-90, 90], got ${lat}`,
+    )
+  }
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+    throw new Error(
+      `Invalid location.lon: must be a finite number in [-180, 180], got ${lon}`,
+    )
+  }
+
+  requireFiniteInRange('systemConfig.tiltDeg', systemConfig.tiltDeg, 0, 90)
+  requireFiniteInRange(
+    'systemConfig.azimuthDeg',
+    systemConfig.azimuthDeg,
+    0,
+    360,
+  )
+  requireFiniteInRange(
+    'systemConfig.systemLossesPercent',
+    systemConfig.systemLossesPercent,
+    0,
+    100,
+  )
+  requireFiniteInRange(
+    'systemConfig.manualShadingPercent',
+    systemConfig.manualShadingPercent,
+    0,
+    100,
+  )
+
+  if (
+    !Number.isFinite(systemConfig.panelCount) ||
+    systemConfig.panelCount <= 0
+  ) {
+    throw new Error(
+      `Invalid systemConfig.panelCount: must be a finite number > 0, got ${systemConfig.panelCount}`,
+    )
+  }
+  if (
+    !Number.isFinite(systemConfig.wattsPerPanel) ||
+    systemConfig.wattsPerPanel <= 0
+  ) {
+    throw new Error(
+      `Invalid systemConfig.wattsPerPanel: must be a finite number > 0, got ${systemConfig.wattsPerPanel}`,
+    )
+  }
+  if (!Number.isFinite(systemConfig.tempCoefficientPercentPerC)) {
+    throw new Error(
+      `Invalid systemConfig.tempCoefficientPercentPerC: must be a finite number, got ${systemConfig.tempCoefficientPercentPerC}`,
+    )
+  }
+  if (!Number.isFinite(systemConfig.efficiencyPercent)) {
+    throw new Error(
+      `Invalid systemConfig.efficiencyPercent: must be a finite number, got ${systemConfig.efficiencyPercent}`,
+    )
+  }
+}
+
+function requireFiniteInRange(
+  fieldName: string,
+  value: number,
+  min: number,
+  max: number,
+): void {
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new Error(
+      `Invalid ${fieldName}: must be a finite number in [${min}, ${max}], got ${value}`,
+    )
+  }
+}
+
 function toPanelSpec(systemConfig: SystemConfig): PanelSpec {
   return {
     ratedWattsPeak: systemConfig.panelCount * systemConfig.wattsPerPanel,
@@ -80,6 +167,7 @@ export async function runLiveSimulation(
   deps: RunLiveSimulationDeps = defaultDeps,
 ): Promise<SimulationResult> {
   const { location, systemConfig } = input
+  validateInput(location, systemConfig)
   const climate = await deps.fetchForecast(location.lat, location.lon)
   const panelSpec = toPanelSpec(systemConfig)
   const manualShadingFactor = 1 - systemConfig.manualShadingPercent / 100

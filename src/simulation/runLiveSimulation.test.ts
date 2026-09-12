@@ -72,22 +72,51 @@ describe('runLiveSimulation', () => {
     // Rated array capacity: 20 panels * 400W = 8000 Wp. No hour should
     // exceed that (POA irradiance can modestly exceed 1000 W/m2 with the
     // isotropic ground-reflected term, but not by nearly enough to clear
-    // this margin), and the sunniest midday hour should be a substantial
-    // fraction of it after losses/shading.
+    // this margin).
     const ratedWattsPeak =
       SYSTEM_CONFIG.panelCount * SYSTEM_CONFIG.wattsPerPanel
     for (const watts of byTimestamp.values()) {
       expect(watts).toBeLessThan(ratedWattsPeak * 1.2)
     }
 
+    // Golden reference values independently verified against pvlib 0.13
+    // (own SPA solar position + get_total_irradiance(model='isotropic',
+    // albedo=0.2)) for this exact fixture/location/system config — see the
+    // PR #34 review. These pin the *magnitude* of the output tightly
+    // (unlike the loose bound checks above), so a real end-to-end wiring
+    // error (e.g. feeding DNI where BHI is expected) would be caught.
     const middayWatts = byTimestamp.get('2026-06-21T12:00:00Z')!
-    expect(middayWatts).toBeGreaterThan(ratedWattsPeak * 0.3)
+    expect(middayWatts).toBeCloseTo(4180.5, 1)
+
+    const eveningWatts = byTimestamp.get('2026-06-21T18:00:00Z')!
+    expect(eveningWatts).toBeCloseTo(558.4, 1)
 
     // Power should rise from sunrise toward the midday peak.
     const morningWatts = byTimestamp.get('2026-06-21T05:00:00Z')!
     const lateMorningWatts = byTimestamp.get('2026-06-21T09:00:00Z')!
     expect(lateMorningWatts).toBeGreaterThan(morningWatts)
     expect(middayWatts).toBeGreaterThan(lateMorningWatts)
+  })
+
+  it('applies the interval-midpoint sun-position adjustment in the correct direction, pinned near sunset where it matters most', async () => {
+    // At midday the midpoint adjustment barely matters (~0.14% difference
+    // between -30min/0/+30min variants), so it can't distinguish a sign
+    // flip. Near sunset (18:00Z, sun altitude ~15 deg at the midpoint) the
+    // three variants differ by 2.1x - 558.4 W (as implemented, -30min) vs.
+    // 500.5 W (naive 0 min) vs. 263.0 W (sign-flipped +30min) - independently
+    // verified against pvlib in the PR #34 review. Pinning this value
+    // guards against a future sign flip on GHI_INTERVAL_MIDPOINT_OFFSET_MS,
+    // which would otherwise pass every other assertion in this file.
+    const result = await runLiveSimulation(
+      { location: BERLIN, systemConfig: SYSTEM_CONFIG },
+      { fetchForecast: async () => BERLIN_SUMMER_FIXTURE },
+    )
+
+    const eveningWatts = result.hourlyWattsSeries.find(
+      (p) => p.timestamp === '2026-06-21T18:00:00Z',
+    )!.watts
+
+    expect(eveningWatts).toBeCloseTo(558.4, 1)
   })
 
   it('applies manual shading as an additional multiplicative derate on top of system losses', async () => {
@@ -136,5 +165,102 @@ describe('runLiveSimulation', () => {
     )
 
     expect(result.hourlyWattsSeries).toEqual([])
+  })
+
+  describe('input validation', () => {
+    const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
+
+    // A partially-cleared React numeric input (issue #13's form) produces
+    // NaN, which must never silently propagate into `watts` - see PR #34
+    // review finding #1.
+    it('throws a clear error for NaN manualShadingPercent instead of propagating NaN into watts', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: { ...SYSTEM_CONFIG, manualShadingPercent: NaN },
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/manualShadingPercent/)
+    })
+
+    it('throws a clear error for NaN systemLossesPercent instead of propagating NaN into watts', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: { ...SYSTEM_CONFIG, systemLossesPercent: NaN },
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/systemLossesPercent/)
+    })
+
+    it('throws a clear error for NaN panelCount instead of propagating NaN into watts', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: { ...SYSTEM_CONFIG, panelCount: NaN },
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/panelCount/)
+    })
+
+    // A negative percentage must be rejected, not silently turn a "loss"
+    // into a gain (e.g. manualShadingPercent: -20 previously inflated
+    // output to 5574 W instead of derating it).
+    it('throws a clear error for a negative manualShadingPercent instead of silently inflating output', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: { ...SYSTEM_CONFIG, manualShadingPercent: -20 },
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/manualShadingPercent/)
+    })
+
+    it('throws a clear error for a negative systemLossesPercent instead of silently inflating output', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: { ...SYSTEM_CONFIG, systemLossesPercent: -50 },
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/systemLossesPercent/)
+    })
+
+    // An invalid latitude must throw a clear error, not silently return an
+    // all-zero series (a bad geocode from issue #12 would otherwise render
+    // as "your system produces nothing").
+    it('throws a clear error for an out-of-range latitude instead of returning an all-zero series', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: { lat: 200, lon: BERLIN.lon },
+            systemConfig: SYSTEM_CONFIG,
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/lat/)
+    })
+
+    it('throws a clear error for a NaN latitude instead of returning an all-zero series', async () => {
+      await expect(
+        runLiveSimulation(
+          {
+            location: { lat: NaN, lon: BERLIN.lon },
+            systemConfig: SYSTEM_CONFIG,
+          },
+          deps,
+        ),
+      ).rejects.toThrow(/lat/)
+    })
   })
 })

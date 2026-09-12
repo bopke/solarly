@@ -50,9 +50,21 @@ This is a documented approximation, not an exact fix — real irradiance
 within the hour isn't necessarily symmetric around the midpoint (e.g. a
 passing cloud), but it's a strict improvement over using the interval-end
 instant, is O(1) to implement, and requires no new dependency or model.
-The residual error is small except very close to sunrise/sunset, where
-`decomposeGhi()`'s and `poaIrradiance()`'s own low-sun guards already limit
-how much a small sun-position error can distort the result.
+The residual sensitivity to the midpoint choice is _not_ confined to the
+immediate sunrise/sunset moment: an independent PR #34 review measured the
+0/±30min variants at the Berlin fixture and found the largest swing
+(±30min changing output by ~2.1x) at roughly 7-15° sun altitude — comfortably
+above the horizon, in the first/last hour or so of daylight — not right at
+the horizon itself. `decomposeGhi()`'s and `poaIrradiance()`'s own low-sun
+guards only trigger below 3° altitude, so they play no role in bounding this
+sensitivity; they exist to bound a different failure mode (the `kt`
+blow-up pathology right at the horizon), not the midpoint-timing error. In
+other words, the approximation's weakest spot is the low-sun band generally,
+not just the instant of sunrise/sunset, and nothing in the current pipeline
+specifically dampens it there — it's simply a cost this approximation
+accepts in exchange for the sizeable accuracy win it delivers over naive
+`HH:00Z` sun position at those same hours (measured +11.6% at 18:00Z in the
+fixture).
 
 **2. Loss stacking: `systemLossesPercent` and `manualShadingPercent`
 multiply as independent derate factors.** `panelPowerOutput()` already
@@ -88,18 +100,40 @@ interface SimulationResult {
 
 `hourlyWattsSeries` is the shared field both modes are expected to
 populate — an hourly power curve, ordered by timestamp, with `timestamp`
-as an ISO 8601 UTC string and `watts` as instantaneous(-equivalent) power
-output for that hour. For Live mode this spans Open-Meteo's forecast
-horizon (3-7 days) and feeds the Forecast chart tab (issue #17) directly.
-TMY mode is expected to populate the same field with a representative
-year's hourly series (or per-representative-day series — left to #9 to
-decide) so Daily/Monthly/Heatmap chart components can share
-aggregation/formatting logic where useful; `mode` lets chart code
-branch on mode-specific behavior (e.g. only Live mode showing the
-Forecast tab, per the M1 design doc) without inspecting the data shape
-itself. This is a reasonable-effort shared design made without #9 having
-landed yet — if #9's needs turn out to require a different or extended
-shape, reconcile then rather than blocking #10 on it.
+as an ISO 8601 UTC string and `watts` as the hour-**mean** power output for
+that hour (not an instantaneous sample) — the input GHI is itself an hourly
+mean, so the output inherits that property. This is the nicer of the two to
+have, since it makes `Wh = watts * 1h` exact for energy totals (ADR 0040
+leans on precisely this for #17's eventual kWh aggregates). For Live mode
+this spans Open-Meteo's forecast horizon (3-7 days) and feeds the Forecast
+chart tab (issue #17) directly. TMY mode is expected to populate the same
+field with a representative year's hourly series (or per-representative-day
+series — left to #9 to decide) so Daily/Monthly/Heatmap chart components can
+share aggregation/formatting logic where useful; `mode` lets chart code
+branch on mode-specific behavior (e.g. only Live mode showing the Forecast
+tab, per the M1 design doc) without inspecting the data shape itself. This
+is a reasonable-effort shared design made without #9 having landed yet — if
+#9's needs turn out to require a different or extended shape, reconcile then
+rather than blocking #10 on it.
+
+**Known gaps, left for #17 to address:**
+
+- **No timezone/UTC-offset information.** `Location` is `{lat, lon}` and
+  `timestamp` is UTC, so a consumer cannot bucket hours into _local_ days
+  (e.g. "today's forecast") without separately geocoding a UTC offset.
+  Open-Meteo's response includes `timezone`/`utc_offset_seconds`, but the
+  current `data-sources` client (issue #7) discards them when normalizing
+  into `HourlyClimate`. Fixing this requires extending the Open-Meteo
+  client's response parsing, which is out of scope for this branch; #17
+  (or a follow-up to issue #7) should add a UTC-offset field to
+  `HourlyClimate`/`SimulationResult` before implementing local-day
+  bucketing.
+- **No kWh aggregates.** `SimulationResult` only exposes the raw hourly
+  watts series; there's no daily/total kWh or `generatedAt` field. Not
+  required by #10's acceptance criteria, and cheap for #17 to derive from
+  `hourlyWattsSeries` directly (`Wh = watts * 1h` per the note above) without
+  needing changes here, so it's left as a consumer-side concern rather than
+  added speculatively.
 
 ## Consequences
 
