@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AppShell } from './AppShell'
@@ -11,10 +12,47 @@ describe('AppShell', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows the empty state even while loading, when no location is set', () => {
+    // Priority order is empty -> error -> loading -> content: an
+    // in-flight run with no location yet should never show a spinner.
+    render(<AppShell hasLocation={false} isLoading />)
+    expect(screen.getByText(/no location selected/i)).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
   it('shows the loading skeleton instead of tab content while loading', () => {
-    render(<AppShell hasLocation isLoading />)
+    render(
+      <AppShell
+        hasLocation
+        isLoading
+        tabContent={{ daily: <div>Daily chart goes here</div> }}
+      />,
+    )
     expect(screen.getByRole('status')).toBeInTheDocument()
     expect(screen.queryByText(/no location selected/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/daily chart goes here/i)).not.toBeInTheDocument()
+  })
+
+  it('shows an error state instead of loading/content when error is set', () => {
+    render(
+      <AppShell
+        hasLocation
+        isLoading
+        error={<span>Couldn&apos;t reach the climate API</span>}
+        tabContent={{ daily: <div>Daily chart goes here</div> }}
+      />,
+    )
+    expect(
+      screen.getByText(/couldn't reach the climate api/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByText(/daily chart goes here/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the empty state, not the error, when no location is set', () => {
+    render(<AppShell hasLocation={false} error={<span>Some error</span>} />)
+    expect(screen.getByText(/no location selected/i)).toBeInTheDocument()
+    expect(screen.queryByText(/some error/i)).not.toBeInTheDocument()
   })
 
   it('shows tab content once a location is set and loading has finished', () => {
@@ -131,5 +169,92 @@ describe('AppShell', () => {
     expect(
       screen.queryByText(/location picker placeholder/i),
     ).not.toBeInTheDocument()
+  })
+
+  it('falls back to a labeled placeholder for a tab with no tabContent entry', () => {
+    // The partial-rollout guarantee siblings rely on: an unset tab gets a
+    // placeholder, not a blank panel or a crash.
+    render(
+      <AppShell hasLocation tabContent={{ monthly: <div>Monthly</div> }} />,
+    )
+    expect(screen.getByText(/daily tab placeholder/i)).toBeInTheDocument()
+  })
+
+  it('disables the Update button via updateDisabled and does not fire onUpdate', () => {
+    const onUpdate = vi.fn()
+    render(<AppShell hasLocation onUpdate={onUpdate} updateDisabled />)
+
+    const button = screen.getByRole('button', { name: 'Update' })
+    expect(button).toBeDisabled()
+
+    fireEvent.click(button)
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('defaults to the forecast tab when defaultMode is live', () => {
+    render(<AppShell hasLocation defaultMode="live" />)
+    expect(screen.getByRole('tab', { name: 'Forecast' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByRole('radio', { name: 'Live' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+
+  it('passes the current mode and activeTab to onUpdate', () => {
+    const onUpdate = vi.fn()
+    render(<AppShell hasLocation onUpdate={onUpdate} />)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Monthly' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+
+    expect(onUpdate).toHaveBeenCalledWith({ mode: 'tmy', activeTab: 'monthly' })
+  })
+
+  it('does not throw when onUpdate is not provided', () => {
+    render(<AppShell hasLocation />)
+    expect(() =>
+      fireEvent.click(screen.getByRole('button', { name: 'Update' })),
+    ).not.toThrow()
+  })
+
+  describe('controlled mode/activeTab', () => {
+    function ControlledHarness() {
+      const [mode, setMode] = useState<'tmy' | 'live'>('tmy')
+      const [activeTab, setActiveTab] = useState<
+        'daily' | 'monthly' | 'heatmap' | 'forecast'
+      >('daily')
+      return (
+        <AppShell
+          hasLocation
+          mode={mode}
+          onModeChange={setMode}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+        />
+      )
+    }
+
+    it('lets a parent observe and drive mode/activeTab', () => {
+      render(<ControlledHarness />)
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Monthly' }))
+      expect(screen.getByRole('tab', { name: 'Monthly' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      )
+
+      fireEvent.click(screen.getByRole('radio', { name: 'Live' }))
+      expect(screen.getByRole('radio', { name: 'Live' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      )
+      expect(screen.getByRole('tab', { name: 'Forecast' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      )
+    })
   })
 })

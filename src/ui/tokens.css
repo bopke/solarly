@@ -1,0 +1,37 @@
+/*
+ * Shared design tokens for `ui/` components (ADR 0060). Deliberately a
+ * plain global stylesheet, not a CSS Module: CSS custom properties
+ * defined on a module-scoped class (as these previously were, on
+ * `.shell` in `AppShell.module.css`) are only visible to DOM descendants
+ * of that class, which breaks for anything rendered outside `AppShell`'s
+ * subtree — MapLibre popups, portaled dropdowns/modals, or a component
+ * rendered standalone in a test. Defining them on `:root` instead makes
+ * them available everywhere. Imported once, in `src/main.tsx`.
+ *
+ * Component `*.module.css` files should read these via `var(--shell-*)`
+ * rather than hardcoding colors.
+ */
+
+:root {
+  --shell-bg: #fffdf7;
+  --shell-surface: #ffffff;
+  --shell-border: #e7e2d6;
+  --shell-text: #1c1917;
+  --shell-muted: #78716c;
+  --shell-accent: #d97706;
+  --shell-accent-hover: #b45309;
+  --shell-accent-contrast: #fffdf7;
+  --shell-hover: #f5f0e6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --shell-bg: #121110;
+    --shell-surface: #181614;
+    --shell-border: #33302b;
+    --shell-text: #f5f0e6;
+    --shell-muted: #a8a29e;
+    --shell-accent-contrast: #181614;
+    --shell-hover: #221f1b;
+  }
+}

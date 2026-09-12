@@ -37,17 +37,37 @@ dependency and no extra build configuration.
 
 Conventions for `ui/` components going forward:
 
-- One `Component.module.css` per component file, imported as `import
-styles from './Component.module.css'` and referenced via
-  `styles.someClassName`.
+- **Flat files**: `Component.module.css` colocated directly next to
+  `Component.tsx` in `src/ui/` — not a subdirectory per component. This
+  was ambiguous in the original text of this ADR ("colocated... in
+  `src/ui/`" reads either way) and had already diverged in practice
+  (`issue-13-config-form`'s `SystemConfigForm` used a
+  `src/ui/SystemConfigForm/{...}` subdirectory). Flat is simpler and is
+  what the rest of `src/ui/` already does (`AppShell.tsx` +
+  `AppShell.module.css`, `Sidebar.tsx` + `Sidebar.module.css`, etc.) — a
+  component with enough helper modules to want its own directory is the
+  exception, not the default, and can opt out explicitly when it
+  actually needs to.
 - Shared design tokens (colors, spacing) are exposed as CSS custom
-  properties on the top-level shell's root class (see `AppShell.module.css`
-  — `--shell-bg`, `--shell-text`, `--shell-accent`, etc., redefined under
-  `@media (prefers-color-scheme: dark)`), so child components read
-  `var(--shell-*)` rather than hardcoding colors. Sibling issues building
-  new top-level slots (location picker, system config form) should reuse
-  these tokens rather than inventing new ones, to keep the app visually
-  coherent.
+  properties on **`:root`, in `src/ui/tokens.css`** (a plain global
+  stylesheet, imported once from `src/main.tsx` — not a CSS Module) —
+  `--shell-bg`, `--shell-text`, `--shell-accent`, etc., redefined under
+  `@media (prefers-color-scheme: dark)`. Component `*.module.css` files
+  read them via `var(--shell-*)` rather than hardcoding colors. These
+  were originally defined on `AppShell.module.css`'s `.shell` class, but
+  a CSS Module class is scoped to its own DOM subtree — custom properties
+  defined there aren't visible to anything portaled outside it (map
+  popups, dropdowns, modals), so they live on `:root` instead. Sibling
+  issues building new top-level slots (location picker, system config
+  form) should reuse these tokens rather than inventing new ones, to keep
+  the app visually coherent.
+- **The narrow/desktop breakpoint is 768px** (`max-width: 768px` in CSS;
+  `SIDEBAR_BREAKPOINT_PX` / `SIDEBAR_BREAKPOINT_QUERY` in
+  `src/ui/types.ts` for JS that needs to check it, e.g. via
+  `matchMedia`). This was previously only implicit in `AppShell.module.css`
+  and `Sidebar.module.css`'s media queries; siblings introducing their
+  own responsive behavior should reuse this value rather than picking
+  their own.
 - Keep visual design "clean but not over-invested" per the M1 spec's
   functional-shell framing — this is not a design system, just enough
   structure that independently-built components don't clash.
@@ -61,9 +81,9 @@ styles from './Component.module.css'` and referenced via
   even using generic names like `.container` or `.title`.
 - Global/shared values (colors, breakpoints) still need explicit
   coordination — CSS Modules alone doesn't give you a design-token system.
-  The `--shell-*` custom properties on `AppShell.module.css`'s root class
-  are the interim mechanism; if the token set grows unwieldy, a follow-up
-  ADR can introduce a dedicated tokens file.
+  The `--shell-*` custom properties on `:root` in `src/ui/tokens.css` are
+  the interim mechanism; if the token set grows unwieldy, a follow-up ADR
+  can introduce a more structured tokens setup.
 - If a future need arises for dynamic/runtime-computed styles beyond what
   CSS custom properties handle, that would be a reason to revisit this
   decision — not expected in the near term for M1's scope.

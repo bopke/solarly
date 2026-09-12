@@ -11,20 +11,32 @@ tabs). Depends only on `simulation`'s output types — never reaches into
 layout "A" from the M1 design doc). It composes:
 
 - `Sidebar.tsx` — location/system-config placeholder slots, `ModeToggle`,
-  `UpdateButton`. Collapses to a top accordion below 768px.
+  `UpdateButton`. Collapses to a top accordion below 768px
+  (`SIDEBAR_BREAKPOINT_PX` in `types.ts`), and gates that collapsed state
+  on actually being at a narrow viewport so widening the browser back
+  past the breakpoint always leaves the sidebar reachable again.
 - `MainArea.tsx` — `TabNav` + a content panel that shows `EmptyState`,
-  `LoadingSkeleton`, or the active tab's content, in that priority order.
+  `ErrorState`, `LoadingSkeleton`, or the active tab's content, in that
+  priority order (empty → error → loading → content).
 
 Sibling issues (location picker, system config form, Daily/Monthly/
 Heatmap/Forecast chart tabs) plug into `AppShell`'s slot props —
-`locationSlot`, `systemConfigSlot`, `tabContent` — without needing to
-modify these files. See each component's prop JSDoc for the exact
-interface, or the app-shell PR description.
+`locationSlot`, `systemConfigSlot`, `tabContent`, `error` — without
+needing to modify these files. `AppShell` is uncontrolled by default
+(it owns `mode`/`activeTab` state, seeded from `defaultMode`), but a
+parent can take over either via the optional `mode`/`onModeChange` and
+`activeTab`/`onTabChange` prop pairs; `onUpdate` always receives the
+current `{ mode, activeTab }` regardless. See each component's prop
+JSDoc for the exact interface, or the app-shell PR description.
 
 ## Styling
 
-Components use CSS Modules (`Component.module.css` colocated with
-`Component.tsx`) per `docs/decisions/0060-ui-styling-approach.md`. Shared
-color tokens live as CSS custom properties (`--shell-*`) on `AppShell`'s
-root class — reuse them via `var(--shell-*)` rather than hardcoding
-colors.
+Components use CSS Modules (`Component.module.css` colocated flat, next
+to `Component.tsx`, not in a subdirectory) per
+`docs/decisions/0060-ui-styling-approach.md`. Shared color tokens live as
+CSS custom properties (`--shell-*`) on `:root`, in `src/ui/tokens.css`
+(imported once from `src/main.tsx`) — reuse them via `var(--shell-*)`
+rather than hardcoding colors. They're on `:root` rather than a
+component's own class specifically so they're available to anything
+rendered outside `AppShell`'s DOM subtree too (portaled map popups,
+dropdowns, modals).

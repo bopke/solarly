@@ -10,11 +10,22 @@ export interface AppShellProps {
   /** Whether a simulation run is in flight; drives the main area's loading state. */
   isLoading?: boolean
   /**
-   * Called when the user clicks "Update". Wire this to the real
-   * simulation trigger once `simulation` is integrated; defaults to a
-   * console.log no-op.
+   * Content describing a failed simulation run (e.g. "Couldn't reach the
+   * climate API — Retry"), or `undefined`/`null` when there is no error.
+   * Rendered in place of the loading/content panel — see {@link MainArea}
+   * for the exact priority order. The caller owns retry affordances; the
+   * shell only decides *when* to show this slot, not what it contains.
    */
-  onUpdate?: () => void
+  error?: ReactNode
+  /**
+   * Called when the user clicks "Update", with the mode and active tab
+   * selected at the time of the click — needed because TMY vs Live
+   * selects an entirely different data source (climate normals vs
+   * forecast), so the parent can't dispatch the right fetch without
+   * knowing which one was showing. Wire this to the real simulation
+   * trigger once `simulation` is integrated.
+   */
+  onUpdate?: (context: { mode: Mode; activeTab: TabId }) => void
   /** Disables the Update button (e.g. while sibling form inputs are invalid). */
   updateDisabled?: boolean
   /** Location picker placeholder slot — see {@link Sidebar}. */
@@ -23,40 +34,87 @@ export interface AppShellProps {
   systemConfigSlot?: ReactNode
   /** Per-tab content — see {@link MainArea}. */
   tabContent?: Partial<Record<TabId, ReactNode>>
-  /** Initial mode; uncontrolled thereafter. Defaults to 'tmy'. */
+  /** Initial mode when `mode` is not supplied (uncontrolled). Defaults to 'tmy'. */
   defaultMode?: Mode
+  /**
+   * Current mode, for a parent that wants to observe and/or drive it
+   * directly (e.g. for URL persistence). Omit to let `AppShell` manage
+   * mode internally (starting from `defaultMode`) — this is the default
+   * and requires no other props. Passing `mode` without `onModeChange`
+   * makes the toggle inert, same as any other controlled React input.
+   */
+  mode?: Mode
+  /** Called when the user switches mode. Required to make a controlled `mode` interactive. */
+  onModeChange?: (mode: Mode) => void
+  /**
+   * Current active tab, for a parent that wants to observe and/or drive
+   * it directly. Omit to let `AppShell` manage it internally — the
+   * default, and independent of whether `mode` is controlled.
+   */
+  activeTab?: TabId
+  /** Called when the user selects a different tab. Required to make a controlled `activeTab` interactive. */
+  onTabChange?: (tab: TabId) => void
 }
 
 /**
  * Top-level app shell: left sidebar (location/system-config slots, mode
  * toggle, update button) + main chart area (tab nav + content), per
- * layout "A" in the M1 design doc. Owns `mode` and `activeTab` state;
- * everything else is either a prop or a sibling-issue slot.
+ * layout "A" in the M1 design doc.
+ *
+ * `mode` and `activeTab` are uncontrolled by default (`AppShell` owns the
+ * state, seeded from `defaultMode`), but a parent can take over either or
+ * both by passing the matching controlled prop pair (`mode`+
+ * `onModeChange`, `activeTab`+`onTabChange`) — e.g. to persist them in
+ * the URL, or to know which one is active when `onUpdate` fires.
+ * `onUpdate` itself always receives the current `{ mode, activeTab }`
+ * regardless of which mode (controlled or not) is in use.
  */
 export function AppShell({
   hasLocation,
   isLoading = false,
-  onUpdate = () =>
-    console.log('Update clicked (no-op — simulation trigger not wired up yet)'),
+  error,
+  onUpdate,
   updateDisabled = false,
   locationSlot,
   systemConfigSlot,
   tabContent,
   defaultMode = 'tmy',
+  mode: controlledMode,
+  onModeChange,
+  activeTab: controlledActiveTab,
+  onTabChange,
 }: AppShellProps) {
-  const [mode, setMode] = useState<Mode>(defaultMode)
-  const [activeTab, setActiveTab] = useState<TabId>(
+  const [uncontrolledMode, setUncontrolledMode] = useState<Mode>(defaultMode)
+  const [uncontrolledActiveTab, setUncontrolledActiveTab] = useState<TabId>(
     TABS_BY_MODE[defaultMode][0],
   )
 
+  const mode = controlledMode ?? uncontrolledMode
+  const activeTab = controlledActiveTab ?? uncontrolledActiveTab
+
+  function setActiveTab(nextTab: TabId) {
+    if (controlledActiveTab === undefined) {
+      setUncontrolledActiveTab(nextTab)
+    }
+    onTabChange?.(nextTab)
+  }
+
   function handleModeChange(nextMode: Mode) {
-    setMode(nextMode)
-    // Keep activeTab valid: reset to the first tab available in the new mode
-    // whenever the current tab wouldn't be visible there.
+    if (controlledMode === undefined) {
+      setUncontrolledMode(nextMode)
+    }
+    onModeChange?.(nextMode)
+
+    // Keep activeTab valid: reset to the first tab available in the new
+    // mode whenever the current tab wouldn't be visible there.
     const availableTabs = TABS_BY_MODE[nextMode]
     if (!availableTabs.includes(activeTab)) {
       setActiveTab(availableTabs[0])
     }
+  }
+
+  function handleUpdate() {
+    onUpdate?.({ mode, activeTab })
   }
 
   return (
@@ -66,7 +124,7 @@ export function AppShell({
         systemConfigSlot={systemConfigSlot}
         mode={mode}
         onModeChange={handleModeChange}
-        onUpdate={onUpdate}
+        onUpdate={handleUpdate}
         updateDisabled={updateDisabled}
       />
       <MainArea
@@ -75,6 +133,7 @@ export function AppShell({
         onTabChange={setActiveTab}
         hasLocation={hasLocation}
         isLoading={isLoading}
+        error={error}
         tabContent={tabContent}
       />
     </div>

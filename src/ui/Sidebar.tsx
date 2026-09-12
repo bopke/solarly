@@ -1,8 +1,34 @@
-import { useState, type ReactNode } from 'react'
-import type { Mode } from './types'
+import { useEffect, useId, useState, type ReactNode } from 'react'
+import { SIDEBAR_BREAKPOINT_QUERY, type Mode } from './types'
 import { ModeToggle } from './ModeToggle'
 import { UpdateButton } from './UpdateButton'
 import styles from './Sidebar.module.css'
+
+/**
+ * Tracks whether the given `matchMedia` query currently matches, updating
+ * live as the viewport is resized. Used to gate the sidebar's collapsed
+ * state on actually being at a width where the accordion toggle exists —
+ * see the module doc comment below for why.
+ */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches,
+  )
+
+  useEffect(() => {
+    const mql = window.matchMedia(query)
+    setMatches(mql.matches)
+
+    function handleChange(event: MediaQueryListEvent) {
+      setMatches(event.matches)
+    }
+
+    mql.addEventListener('change', handleChange)
+    return () => mql.removeEventListener('change', handleChange)
+  }, [query])
+
+  return matches
+}
 
 export interface SidebarProps {
   /**
@@ -38,6 +64,14 @@ export interface SidebarProps {
  * viewports (CSS-driven layout, toggled below 768px) and additionally
  * exposes an always-available collapse toggle so the behavior is
  * testable and usable at any width.
+ *
+ * The `expanded` state only ever *hides* content while the accordion
+ * toggle that controls it is actually visible (i.e. below the 768px
+ * breakpoint) — gated via `useMediaQuery` rather than CSS alone. Without
+ * this, collapsing on a narrow viewport and then widening the browser
+ * back past the breakpoint would leave `.contentCollapsed`/`hidden`
+ * applied with no visible control left to undo it, since the toggle
+ * itself is `display: none` at desktop widths.
  */
 export function Sidebar({
   locationSlot,
@@ -49,6 +83,12 @@ export function Sidebar({
   defaultExpanded = true,
 }: SidebarProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
+  const isNarrow = useMediaQuery(SIDEBAR_BREAKPOINT_QUERY)
+  const contentId = useId()
+
+  // Only actually collapsed when both "the user collapsed it" and "we're
+  // at a width where that's reversible" are true.
+  const collapsed = isNarrow && !expanded
 
   return (
     <aside className={styles.sidebar} aria-label="Configuration">
@@ -57,16 +97,16 @@ export function Sidebar({
         <button
           type="button"
           className={styles.toggle}
-          aria-expanded={expanded}
-          aria-controls="sidebar-content"
+          aria-expanded={!collapsed}
+          aria-controls={contentId}
           onClick={() => setExpanded((prev) => !prev)}
         >
           Settings
           <span
             className={
-              expanded
-                ? `${styles.chevron} ${styles.chevronExpanded}`
-                : styles.chevron
+              collapsed
+                ? styles.chevron
+                : `${styles.chevron} ${styles.chevronExpanded}`
             }
             aria-hidden="true"
           >
@@ -76,13 +116,13 @@ export function Sidebar({
       </div>
 
       <div
-        id="sidebar-content"
+        id={contentId}
         className={
-          expanded
-            ? styles.content
-            : `${styles.content} ${styles.contentCollapsed}`
+          collapsed
+            ? `${styles.content} ${styles.contentCollapsed}`
+            : styles.content
         }
-        hidden={!expanded}
+        hidden={collapsed}
       >
         <section className={styles.section} aria-label="Location">
           <h2 className={styles.sectionTitle}>Location</h2>

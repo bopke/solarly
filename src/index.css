@@ -10,6 +10,18 @@
   box-sizing: border-box;
 }
 
+/*
+ * The `hidden` attribute is only reliably `display: none` when nothing
+ * with higher specificity re-declares `display` on the same element (a
+ * CSS Module class rule, e.g. `.content { display: flex }` in
+ * `Sidebar.module.css`, does). Forcing it here means any future
+ * component can rely on `hidden` alone without also having to remember a
+ * matching `*Collapsed { display: none }` class.
+ */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
