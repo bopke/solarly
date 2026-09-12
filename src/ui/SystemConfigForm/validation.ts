@@ -28,12 +28,28 @@ const FIELD_RULES: Record<
     label: 'Panel count',
     integer: true,
     positive: true,
+    // Sanity cap — not a physical limit, just a guard against an
+    // accidental paste (e.g. a stray extra digit) triggering a very heavy
+    // simulation run.
+    max: 100_000,
   },
+  wattsPerPanel: { label: 'Watts per panel', positive: true },
   efficiencyPercent: { label: 'Efficiency', min: 0, max: 100 },
-  tempCoefficientPercentPerC: { label: 'Temperature coefficient' },
+  // Real panels always lose output as they heat up above the 25°C STC
+  // reference, so the coefficient is never positive (see
+  // `panel-presets`' `PanelPreset.tempCoefficientPercentPerC` doc).
+  tempCoefficientPercentPerC: { label: 'Temperature coefficient', max: 0 },
   systemLossesPercent: { label: 'System losses', min: 0, max: 100 },
   manualShadingPercent: { label: 'Manual shading', min: 0, max: 100 },
 }
+
+/**
+ * Matches plain decimal numbers only (optional sign, optional fractional
+ * part) — deliberately narrower than what `Number()` accepts, so
+ * lookalikes like `'0x10'` (hex) or `'1e3'` (scientific notation) are
+ * rejected as non-numeric input rather than silently parsed as 16 or 1000.
+ */
+const PLAIN_DECIMAL_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)$/
 
 /** Validates a single raw field value, returning an error message or `null` if valid. */
 export function validateField(
@@ -45,6 +61,10 @@ export function validateField(
 
   if (trimmed === '') {
     return `${rule.label} is required`
+  }
+
+  if (!PLAIN_DECIMAL_PATTERN.test(trimmed)) {
+    return `${rule.label} must be a number`
   }
 
   const value = Number(trimmed)
@@ -103,14 +123,19 @@ export function azimuthCompassLabel(azimuthDeg: number): string {
 
 /**
  * Best-effort numeric parse of a field's raw value, falling back to
- * `fallback` when the raw value doesn't parse as a finite number. Used to
- * keep the reported `SystemConfig` complete even while a field is
- * mid-edit or invalid.
+ * `fallback` when the raw value doesn't parse as a plain decimal number
+ * (including hex/scientific-notation lookalikes like `'0x10'` or `'1e3'` —
+ * see {@link PLAIN_DECIMAL_PATTERN}). Used to keep the reported
+ * `SystemConfig` complete even while a field is mid-edit or invalid.
  */
 export function parseFieldOrFallback(
   rawValue: string,
   fallback: number,
 ): number {
-  const value = Number(rawValue.trim())
-  return Number.isFinite(value) && rawValue.trim() !== '' ? value : fallback
+  const trimmed = rawValue.trim()
+  if (!PLAIN_DECIMAL_PATTERN.test(trimmed)) {
+    return fallback
+  }
+  const value = Number(trimmed)
+  return Number.isFinite(value) ? value : fallback
 }
