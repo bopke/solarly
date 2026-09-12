@@ -73,12 +73,26 @@ function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-/** Builds an `Error` with `name === 'AbortError'`, matching `fetch`'s own. */
+/**
+ * Builds an `Error` with `name === 'AbortError'`, matching `fetch`'s own,
+ * regardless of what triggered the abort.
+ *
+ * `signal.reason` is *not* trustworthy as-is: `AbortSignal.timeout()` fires
+ * with a `TimeoutError` `DOMException`, and `DOMException instanceof Error`
+ * is `true`, so a naive `instanceof Error` check lets it through unchanged.
+ * The documented contract (and ADR 0050) is that every cancellation reason
+ * — caller abort or timeout — normalizes to `name === 'AbortError'`, so we
+ * only pass `signal.reason` through untouched when it already satisfies
+ * that; everything else (a `TimeoutError`, a plain string, a caller-supplied
+ * `Error` with some other name, etc.) is wrapped into a fresh `AbortError`
+ * that preserves the original as `cause`.
+ */
 function toAbortError(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) {
-    return signal.reason
+  const reason = signal.reason
+  if (reason instanceof Error && reason.name === 'AbortError') {
+    return reason
   }
-  const error = new Error('Aborted')
+  const error = new Error('Aborted', { cause: reason })
   error.name = 'AbortError'
   return error
 }

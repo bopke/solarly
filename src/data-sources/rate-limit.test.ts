@@ -75,6 +75,26 @@ describe('createThrottle', () => {
     await expect(succeedingPromise).resolves.toBe('ok')
   })
 
+  it('normalizes a caller-supplied abort reason to AbortError even when it is an Error with a different name', async () => {
+    const schedule = createThrottle(1000)
+    const first = vi.fn().mockResolvedValue('first')
+    const second = vi.fn().mockResolvedValue('second')
+    const controller = new AbortController()
+
+    const firstPromise = schedule(first)
+    const secondPromise = schedule(second, controller.signal)
+    const secondAssertion = expect(secondPromise).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort(new Error('user typed again'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    await secondAssertion
+    await firstPromise
+  })
+
   it('rejects a queued task immediately (without waiting minIntervalMs) when its signal aborts', async () => {
     const schedule = createThrottle(1000)
     const first = vi.fn().mockResolvedValue('first')
@@ -119,6 +139,59 @@ describe('createThrottle', () => {
     await secondAssertion
     expect(second).not.toHaveBeenCalled()
     await firstPromise
+  })
+
+  it('normalizes a timeout signal that fires while a task is still queued to AbortError (not TimeoutError)', async () => {
+    // Regression test: AbortSignal.timeout()'s reason is a DOMException
+    // named 'TimeoutError', which is still `instanceof Error`. Before the
+    // fix, toAbortError() returned such reasons unchanged, so a timeout
+    // firing while a task waited for its throttle slot leaked as
+    // name === 'TimeoutError' instead of the documented 'AbortError'.
+    //
+    // Real timers are required here: AbortSignal.timeout() schedules its
+    // own internal timer that fake timers do not control.
+    vi.useRealTimers()
+
+    const schedule = createThrottle(50)
+    const succeeding = vi.fn().mockResolvedValue('ok')
+
+    // Occupies the throttle immediately.
+    const first = schedule(succeeding)
+    // Queued behind `first`; its own 20ms timeout will fire well before
+    // its ~50ms turn comes up.
+    const secondSignal = AbortSignal.timeout(20)
+    const second = schedule(succeeding, secondSignal)
+
+    await expect(second).rejects.toMatchObject({ name: 'AbortError' })
+    await first
+  })
+
+  it('reproduces a burst of queued tasks: later ones time out as AbortError, not TimeoutError', async () => {
+    // Mirrors the reviewer's report: a burst of tasks, each with its own
+    // request timeout, queued behind a shared throttle. The ones far
+    // enough back in the queue for their individual timeout to fire
+    // before their turn must still surface as `name === 'AbortError'`.
+    vi.useRealTimers()
+
+    const schedule = createThrottle(50)
+    const succeeding = vi.fn().mockResolvedValue('ok')
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 6 }, () => {
+        const signal = AbortSignal.timeout(120)
+        return schedule(succeeding, signal).then(
+          () => 'ok',
+          (err: Error) => err.name,
+        )
+      }),
+    )
+
+    // With minIntervalMs=50 and a 120ms per-task timeout, tasks whose
+    // turn would come up after ~120ms never get one — they must reject,
+    // and specifically with 'AbortError', never 'TimeoutError'.
+    expect(outcomes).not.toContain('TimeoutError')
+    expect(outcomes.some((o) => o === 'AbortError')).toBe(true)
+    expect(outcomes.every((o) => o === 'ok' || o === 'AbortError')).toBe(true)
   })
 
   it('does not delay a later task by an earlier aborted task', async () => {

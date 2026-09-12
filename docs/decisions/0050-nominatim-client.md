@@ -53,12 +53,13 @@ a typical server-side API client to this environment:
   problem" — this is the one identification channel that _is_ fully
   controllable from browser `fetch` (it's just a query string value, no
   forbidden-header restriction). The client reads it from
-  `import.meta.env.VITE_NOMINATIM_CONTACT_EMAIL` and only appends it when
-  set, so a deployment can opt in without code changes. **The client
-  defaults to `contact@bopke.dev`** when `VITE_NOMINATIM_CONTACT_EMAIL`
-  is unset, so requests self-identify out of the box without requiring
-  manual `.env` setup; set `VITE_NOMINATIM_CONTACT_EMAIL` (see
-  `.env.example`) to override it for a fork or a different deployment.
+  `import.meta.env.VITE_NOMINATIM_CONTACT_EMAIL`, falling back to a
+  hardcoded default when it's unset, so the param is always appended.
+  **The client defaults to `contact@bopke.dev`** when
+  `VITE_NOMINATIM_CONTACT_EMAIL` is unset, so requests self-identify out
+  of the box without requiring manual `.env` setup; set
+  `VITE_NOMINATIM_CONTACT_EMAIL` (see `.env.example`) to override it for
+  a fork or a different deployment.
   The browser's automatic `Referer` (pointing at Solarly's real domain
   once deployed) remains an additional, passive identification signal,
   but is not something this code sets directly.
@@ -93,15 +94,24 @@ a typical server-side API client to this environment:
   frees its slot right away instead of blocking whatever's scheduled
   after it.
 - **Caching: a simple in-memory, session-lifetime cache keyed on the
-  normalized (trimmed, lower-cased) query string.** `geocode()` checks
-  this cache before scheduling a request and populates it after a
-  successful response. No TTL and no persistence (e.g. `localStorage`) —
-  the cache lives only for the page's lifetime and is cleared on reload.
-  This is enough to satisfy the policy's "don't repeatedly send the same
-  query" requirement for the target use case (a location search box,
-  where re-typing/re-searching the same place is the common case); a
-  persistent cache was judged unnecessary complexity for M1 and can be
-  revisited if usage patterns show it's needed.
+  normalized (trimmed, lower-cased) query string plus the result `limit`**
+  (`JSON.stringify([normalizedQuery, limit])`, so the same query with a
+  different `limit` correctly misses). `geocode()` checks this cache
+  before scheduling a request and populates it after a successful
+  response. No TTL and no persistence (e.g. `localStorage`) — the cache
+  lives only for the page's lifetime and is cleared on reload. A query
+  that genuinely returns no results is cached as `[]` for the rest of the
+  session, same as any other result — re-sending it is exactly what the
+  usage policy discourages. This is enough to satisfy the policy's "don't
+  repeatedly send the same query" requirement for the target use case (a
+  location search box, where re-typing/re-searching the same place is the
+  common case); a persistent cache was judged unnecessary complexity for
+  M1 and can be revisited if usage patterns show it's needed. Callers
+  always receive a fresh copy of the cached array, so mutating a returned
+  result (sorting, pushing, etc.) never leaks between callers. Concurrent
+  identical queries share one in-flight request instead of each triggering
+  their own `fetch`, via a separate `Map` of in-flight promises keyed the
+  same way.
 - **Request timeout and abort handling.** Each request is bounded by
   `AbortSignal.timeout(...)` (default 9s, overridable via
   `options.timeoutMs`), combined with any caller-supplied `AbortSignal`
@@ -110,7 +120,15 @@ a typical server-side API client to this environment:
   caller in the tab indefinitely. Errors from an aborted fetch (whether
   from the caller's own signal or the timeout) preserve `name ===
 'AbortError'` rather than being rewrapped into a generic `Error`, so
-  callers can distinguish cancellation from a genuine failure.
+  callers can distinguish cancellation from a genuine failure. This holds
+  regardless of _where_ the abort/timeout fires — including while the
+  request is still waiting in the shared throttle queue, not just during
+  the `fetch` itself: `rate-limit.ts`'s `toAbortError()` normalizes the
+  queued case by name (`AbortSignal.timeout()`'s reason is a
+  `TimeoutError` `DOMException`, which is still `instanceof Error` but is
+  rewrapped into an `AbortError`-named error unless it's already named
+  `AbortError`), so every cancellation reason — caller abort or timeout,
+  queued or in-flight — surfaces to callers as `name === 'AbortError'`.
 - **Attribution is out of scope for this module.** `GeocodeResult` and
   this client don't render UI; whoever builds the location picker in
   `src/ui/` is responsible for clearly displaying OSM/Nominatim

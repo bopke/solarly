@@ -163,6 +163,29 @@ describe('geocode', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it('returns a fresh array each time so one caller mutating it does not affect another', async () => {
+    mockFetchAlways(berlinFixture)
+
+    const first = await callGeocode('Berlin')
+    first.push({ lat: 0, lon: 0, displayName: 'mutated by caller' })
+    const second = await geocode('Berlin')
+
+    expect(second).not.toBe(first)
+    expect(second).toHaveLength(2)
+  })
+
+  it('deduplicates concurrent identical queries into a single fetch', async () => {
+    const fetchMock = mockFetchAlways(berlinFixture)
+
+    const [first, second] = await Promise.all([
+      callGeocode('Berlin'),
+      geocode('Berlin'),
+    ])
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(second).toEqual(first)
+  })
+
   it('preserves AbortError identity when the caller aborts a queued request', async () => {
     const fetchMock = mockFetchAlways(berlinFixture)
     const controller = new AbortController()
@@ -211,6 +234,55 @@ describe('geocode', () => {
     await assertion
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it('surfaces a timeout that fires while queued (not during fetch) as AbortError, not TimeoutError', async () => {
+    // Regression test for the reviewer-reported bug: AbortSignal.timeout()
+    // fires with a DOMException named 'TimeoutError', which is still
+    // `instanceof Error`. rate-limit.ts's normalization used to return
+    // such reasons unchanged, so a request whose timeout fired while it
+    // was still waiting in the throttle queue (rather than during fetch)
+    // leaked as name === 'TimeoutError' instead of the documented
+    // 'AbortError'. Real timers are required: AbortSignal.timeout() and
+    // the throttle's real spacing must both actually elapse.
+    vi.useRealTimers()
+    mockFetchAlways(berlinFixture)
+
+    // Occupies the throttle immediately (module default spacing is
+    // 1100ms), so the second call is queued behind it.
+    const first = geocode('Berlin')
+    // Queued behind `first`; its 20ms timeout fires long before its turn
+    // (~1100ms away) comes up.
+    const second = geocode('Munich', { timeoutMs: 20 })
+
+    await expect(second).rejects.toMatchObject({ name: 'AbortError' })
+    await first
+  })
+
+  it('reproduces a burst of queued requests timing out as AbortError, not TimeoutError', async () => {
+    // Scaled-down version of the reviewer's 12-query-burst repro: with a
+    // per-request timeout shorter than the cumulative queue wait, later
+    // requests in the burst time out before reaching fetch. They must
+    // still surface as name === 'AbortError', matching the documented
+    // contract, never the raw 'TimeoutError'.
+    vi.useRealTimers()
+    mockFetchAlways(berlinFixture)
+
+    const queries = ['a', 'b', 'c', 'd', 'e', 'f']
+    const outcomes = await Promise.all(
+      queries.map((q) =>
+        geocode(q, { timeoutMs: 2500 }).then(
+          () => 'ok',
+          (err: Error) => err.name,
+        ),
+      ),
+    )
+
+    // Module throttle spacing is 1100ms; with a 2500ms per-request
+    // timeout, requests 4+ in the queue (starting ~3300ms+) never get a
+    // turn before their own clock fires.
+    expect(outcomes).not.toContain('TimeoutError')
+    expect(outcomes.some((o) => o === 'AbortError')).toBe(true)
+  }, 10000)
 
   it('times out a stalled request instead of hanging the queue forever', async () => {
     vi.useRealTimers()
