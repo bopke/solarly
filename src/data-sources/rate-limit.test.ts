@@ -74,4 +74,80 @@ describe('createThrottle', () => {
     await failingAssertion
     await expect(succeedingPromise).resolves.toBe('ok')
   })
+
+  it('rejects a queued task immediately (without waiting minIntervalMs) when its signal aborts', async () => {
+    const schedule = createThrottle(1000)
+    const first = vi.fn().mockResolvedValue('first')
+    const second = vi.fn().mockResolvedValue('second')
+    const controller = new AbortController()
+
+    const firstPromise = schedule(first)
+    const secondPromise = schedule(second, controller.signal)
+    const secondAssertion = expect(secondPromise).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(first).toHaveBeenCalledTimes(1)
+
+    controller.abort()
+    // No further time advance: the abort itself should free the slot,
+    // not the full minIntervalMs wait.
+    await vi.advanceTimersByTimeAsync(0)
+
+    await secondAssertion
+    expect(second).not.toHaveBeenCalled()
+
+    await firstPromise
+  })
+
+  it('rejects immediately, without consuming a slot, when already aborted before its turn', async () => {
+    const schedule = createThrottle(1000)
+    const first = vi.fn().mockResolvedValue('first')
+    const second = vi.fn().mockResolvedValue('second')
+    const controller = new AbortController()
+    controller.abort()
+
+    const firstPromise = schedule(first)
+    const secondPromise = schedule(second, controller.signal)
+    const secondAssertion = expect(secondPromise).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+
+    await vi.runAllTimersAsync()
+
+    await secondAssertion
+    expect(second).not.toHaveBeenCalled()
+    await firstPromise
+  })
+
+  it('does not delay a later task by an earlier aborted task', async () => {
+    const schedule = createThrottle(1000)
+    const first = vi.fn().mockResolvedValue('first')
+    const second = vi.fn().mockResolvedValue('second')
+    const third = vi.fn().mockResolvedValue('third')
+    const controller = new AbortController()
+
+    const firstPromise = schedule(first)
+    const secondPromise = schedule(second, controller.signal)
+    const secondAssertion = expect(secondPromise).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    const thirdPromise = schedule(third)
+
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(0)
+    await secondAssertion
+
+    // third should still start ~1000ms after first, not additionally
+    // delayed by second's aborted wait.
+    await vi.advanceTimersByTimeAsync(999)
+    expect(third).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(third).toHaveBeenCalledTimes(1)
+
+    await firstPromise
+    await thirdPromise
+  })
 })

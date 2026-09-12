@@ -9,7 +9,12 @@ import emptyFixture from './fixtures/nominatim-search-empty.json'
 // "last request" timestamp bleeding into the next test's assertions).
 let geocode: typeof GeocodeFn
 
-function mockFetchOnce(
+/**
+ * Stubs `fetch` to resolve with the same response on every call (note:
+ * despite the similarly-named Vitest `mockResolvedValueOnce`, this mock
+ * answers *every* call, which the throttling test below relies on).
+ */
+function mockFetchAlways(
   body: unknown,
   init: { ok?: boolean; status?: number } = {},
 ) {
@@ -52,7 +57,7 @@ describe('geocode', () => {
   })
 
   it('returns normalized results for a matching query', async () => {
-    mockFetchOnce(berlinFixture)
+    mockFetchAlways(berlinFixture)
 
     const results = await callGeocode('Berlin')
 
@@ -68,13 +73,13 @@ describe('geocode', () => {
   })
 
   it('returns an empty array (not a throw) for a no-match query', async () => {
-    mockFetchOnce(emptyFixture)
+    mockFetchAlways(emptyFixture)
 
     await expect(callGeocode('asdkjhqwlekjhasdkjhasdkjh')).resolves.toEqual([])
   })
 
   it('returns an empty array for a blank query without calling fetch', async () => {
-    const fetchMock = mockFetchOnce(emptyFixture)
+    const fetchMock = mockFetchAlways(emptyFixture)
 
     await expect(callGeocode('   ')).resolves.toEqual([])
 
@@ -82,7 +87,7 @@ describe('geocode', () => {
   })
 
   it('rejects on a non-OK HTTP response', async () => {
-    mockFetchOnce([], { ok: false, status: 503 })
+    mockFetchAlways([], { ok: false, status: 503 })
 
     const promise = geocode('Berlin')
     const assertion = expect(promise).rejects.toThrow(/503/)
@@ -106,8 +111,8 @@ describe('geocode', () => {
     await assertion
   })
 
-  it('requests jsonv2 format and an identifying Accept header', async () => {
-    const fetchMock = mockFetchOnce(berlinFixture)
+  it('requests jsonv2 format with an Accept header and the query param', async () => {
+    const fetchMock = mockFetchAlways(berlinFixture)
 
     await callGeocode('Berlin')
 
@@ -122,7 +127,7 @@ describe('geocode', () => {
   })
 
   it('throttles consecutive requests to roughly 1 per second', async () => {
-    const fetchMock = mockFetchOnce(berlinFixture)
+    const fetchMock = mockFetchAlways(berlinFixture)
 
     const first = geocode('Berlin')
     const second = geocode('Munich')
@@ -136,5 +141,94 @@ describe('geocode', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
     await Promise.all([first, second])
+  })
+
+  it('caches results for repeated (normalized) queries instead of re-fetching', async () => {
+    const fetchMock = mockFetchAlways(berlinFixture)
+
+    const first = await callGeocode('Berlin')
+    // Different casing/whitespace should still hit the cache.
+    const second = await geocode('  BERLIN  ')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(second).toEqual(first)
+  })
+
+  it('does not cache across different limit values', async () => {
+    const fetchMock = mockFetchAlways(berlinFixture)
+
+    await callGeocode('Berlin')
+    await callGeocode('Berlin', { limit: 5 })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves AbortError identity when the caller aborts a queued request', async () => {
+    const fetchMock = mockFetchAlways(berlinFixture)
+    const controller = new AbortController()
+
+    const first = geocode('Berlin')
+    const second = geocode('Munich', { signal: controller.signal })
+    const third = geocode('Paris')
+    // Attach the rejection assertion up front so it "handles" the
+    // rejection the instant it happens, rather than after the fact.
+    const secondAssertion = expect(second).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+
+    // Let the first request go out; the second is now waiting in the
+    // throttle queue for its slot.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(0)
+
+    await secondAssertion
+    // Aborting while queued must not itself trigger a fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // The third request should still fire ~1100ms after the first started,
+    // not delayed further by the aborted second one.
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await first
+    await third
+  })
+
+  it('rejects immediately with an AbortError if the signal is already aborted', async () => {
+    const fetchMock = mockFetchAlways(berlinFixture)
+    const controller = new AbortController()
+    controller.abort()
+
+    const promise = geocode('Berlin', { signal: controller.signal })
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    await vi.runAllTimersAsync()
+
+    await assertion
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('times out a stalled request instead of hanging the queue forever', async () => {
+    vi.useRealTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            // Mimic real fetch: never settle on its own, but reject once
+            // the request signal aborts (from our own timeout, here).
+            init.signal?.addEventListener('abort', () => {
+              reject(init.signal?.reason)
+            })
+          }),
+      ),
+    )
+
+    const promise = geocode('Berlin', { timeoutMs: 20 })
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

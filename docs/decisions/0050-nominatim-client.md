@@ -13,6 +13,10 @@ policy for the public `nominatim.openstreetmap.org` instance
 - An identifying `User-Agent` or HTTP `Referer` so operators can contact
   the app owner if something goes wrong.
 - No more than **1 request per second**.
+- Results **must be cached client-side**; repeatedly sending the same
+  query may get the client classified as faulty and blocked.
+- Attribution to OpenStreetMap/Nominatim must be clearly displayed
+  wherever results are shown.
 
 Solarly is a pure client-side app (per the M1 design doc) — `geocode()`
 runs directly in the user's browser via `fetch`, with no backend proxy to
@@ -50,15 +54,14 @@ a typical server-side API client to this environment:
   controllable from browser `fetch` (it's just a query string value, no
   forbidden-header restriction). The client reads it from
   `import.meta.env.VITE_NOMINATIM_CONTACT_EMAIL` and only appends it when
-  set, so a deployment can opt in without code changes. **This is left
-  unset for now** — no verified contact address was available at
-  implementation time. Filling in `VITE_NOMINATIM_CONTACT_EMAIL` (a real,
-  monitored address) before/at production launch is a follow-up for
-  whoever owns the deployment; the code path is already wired up and
-  covered implicitly (the fetch call still works with the param omitted).
+  set, so a deployment can opt in without code changes. **The client
+  defaults to `contact@bopke.dev`** when `VITE_NOMINATIM_CONTACT_EMAIL`
+  is unset, so requests self-identify out of the box without requiring
+  manual `.env` setup; set `VITE_NOMINATIM_CONTACT_EMAIL` (see
+  `.env.example`) to override it for a fork or a different deployment.
   The browser's automatic `Referer` (pointing at Solarly's real domain
-  once deployed) remains the passive fallback identification signal, but
-  is not something this code sets directly.
+  once deployed) remains an additional, passive identification signal,
+  but is not something this code sets directly.
 - **If traffic grows enough that the public instance's policy becomes a
   real constraint** (not just a documented pad in the client), the actual
   fix is not more client-side cleverness — it's routing through a small
@@ -82,7 +85,37 @@ a typical server-side API client to this environment:
   guarantee; a debounce on the search input (left to the `ui/` module) is
   a complementary UX nicety layered on top, not documented further here.
   A failed request does not wedge the queue — later scheduled requests
-  still get their turn (see `rate-limit.test.ts`).
+  still get their turn (see `rate-limit.test.ts`). The throttle also
+  accepts an optional `AbortSignal` per scheduled task: a task whose
+  signal fires while still queued (waiting for its throttle slot) is
+  rejected immediately with an `AbortError`-named error, rather than
+  sleeping out its full wait first — so an aborted/cancelled request
+  frees its slot right away instead of blocking whatever's scheduled
+  after it.
+- **Caching: a simple in-memory, session-lifetime cache keyed on the
+  normalized (trimmed, lower-cased) query string.** `geocode()` checks
+  this cache before scheduling a request and populates it after a
+  successful response. No TTL and no persistence (e.g. `localStorage`) —
+  the cache lives only for the page's lifetime and is cleared on reload.
+  This is enough to satisfy the policy's "don't repeatedly send the same
+  query" requirement for the target use case (a location search box,
+  where re-typing/re-searching the same place is the common case); a
+  persistent cache was judged unnecessary complexity for M1 and can be
+  revisited if usage patterns show it's needed.
+- **Request timeout and abort handling.** Each request is bounded by
+  `AbortSignal.timeout(...)` (default 9s, overridable via
+  `options.timeoutMs`), combined with any caller-supplied `AbortSignal`
+  via `AbortSignal.any([...])`, so either can cancel the request — and so
+  a stalled `fetch` can't wedge the shared throttle queue for every
+  caller in the tab indefinitely. Errors from an aborted fetch (whether
+  from the caller's own signal or the timeout) preserve `name ===
+'AbortError'` rather than being rewrapped into a generic `Error`, so
+  callers can distinguish cancellation from a genuine failure.
+- **Attribution is out of scope for this module.** `GeocodeResult` and
+  this client don't render UI; whoever builds the location picker in
+  `src/ui/` is responsible for clearly displaying OSM/Nominatim
+  attribution alongside results, per the usage policy. Flagged here (and
+  with a code comment in `nominatim.ts`) so it isn't rediscovered later.
 
 ## Consequences
 
@@ -95,10 +128,15 @@ a typical server-side API client to this environment:
   reload. This is an accepted limitation for a client-only, keyless public
   API; a multi-tab-aware limiter (e.g. via `BroadcastChannel` or
   `localStorage`) was judged not worth the complexity for M1.
-- Nominatim identification is best-effort: a real, monitored
-  `VITE_NOMINATIM_CONTACT_EMAIL` should be set before/at production
-  launch; until then the client works but doesn't self-identify beyond
-  whatever `Referer` the browser sends automatically.
+- Nominatim identification defaults to `contact@bopke.dev` out of the
+  box (via a hardcoded fallback in `nominatim.ts`), so no manual `.env`
+  setup is required before requests self-identify; a deployment can
+  still override it via `VITE_NOMINATIM_CONTACT_EMAIL` (see
+  `.env.example`) if a different contact address is preferred.
+- The in-memory result cache and per-tab throttle both reset on reload,
+  so a user who reloads mid-session loses the "don't repeat this query"
+  protection for queries they'd already made — an accepted trade-off for
+  M1 given no persistence layer exists yet.
 - If usage grows past what the free public instance's policy comfortably
   allows, the follow-up is a proxy or a paid geocoding provider — not a
   bigger client-side workaround.
