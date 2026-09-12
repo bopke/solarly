@@ -41,9 +41,14 @@ interface OpenMeteoErrorResponse {
  * shared `HourlyClimate` shape.
  *
  * Open-Meteo's free, keyless forecast API publishes `shortwave_radiation`
- * directly as an hourly variable — this *is* GHI (instantaneous, W/m^2) —
- * so it's used as-is rather than reconstructed from cloud cover. See
- * docs/decisions/0040-open-meteo-client.md for the full rationale.
+ * directly as an hourly variable — this *is* GHI, W/m^2 — so it's used
+ * as-is rather than reconstructed from cloud cover. Note that this value
+ * is NOT instantaneous: Open-Meteo defines it as the average irradiance
+ * over the preceding hour, so the value stamped at `HH:00Z` describes the
+ * interval `(HH-1):00Z` to `HH:00Z`, not a sample taken at `HH:00Z`. See
+ * docs/decisions/0040-open-meteo-client.md for the full rationale,
+ * including why the `shortwave_radiation_instant` variant (a genuinely
+ * instantaneous point sample) was not chosen instead.
  *
  * Hours where Open-Meteo pads `shortwave_radiation` or `temperature_2m`
  * with `null` (short-horizon source models under a longer `forecast_days`
@@ -71,9 +76,12 @@ export async function fetchOpenMeteoForecast(
   const response = await fetchFn(url.toString())
   if (!response.ok) {
     const reason = await readErrorReason(response)
+    const statusPart = response.statusText
+      ? `${response.status} ${response.statusText}`
+      : `${response.status}`
     throw new Error(
-      `Open-Meteo request failed: ${response.status} ${response.statusText}${
-        reason ? ` - ${reason}` : ''
+      `Open-Meteo request failed: ${statusPart}${
+        reason ? ` - ${reason}` : ' (no reason given)'
       }`,
     )
   }
@@ -90,6 +98,18 @@ export async function fetchOpenMeteoForecast(
     temperature_2m: temperatures,
     shortwave_radiation: shortwaveRadiation,
   } = data.hourly
+
+  if (
+    !Array.isArray(time) ||
+    !Array.isArray(temperatures) ||
+    !Array.isArray(shortwaveRadiation)
+  ) {
+    throw new Error(
+      "Open-Meteo response is missing one or more of the expected 'hourly' " +
+        "arrays ('time', 'temperature_2m', 'shortwave_radiation'); the " +
+        'response shape may have changed.',
+    )
+  }
 
   if (
     temperatures.length !== time.length ||
@@ -112,11 +132,20 @@ export async function fetchOpenMeteoForecast(
 
     // Open-Meteo returns "2026-09-12T13:00" (no offset, no seconds) when
     // timezone=UTC; append ":00Z" to make it an unambiguous UTC ISO 8601
-    // timestamp matching the shared `HourlyClimate` shape.
+    // timestamp matching the shared `HourlyClimate` shape. Guard against a
+    // timestamp that already carries seconds (e.g. "2026-06-21T12:00:00")
+    // so we don't double-append and produce a malformed
+    // "...T12:00:00:00Z" string.
     const isoTimeNaive = time[i]
+    // Minute precision ("...T12:00") has one ":" after the date; seconds
+    // precision ("...T12:00:00") has two. Only append ":00" when seconds
+    // aren't already present, so we never produce "...T12:00:00:00Z".
+    const hasSeconds = isoTimeNaive.split(':').length > 2
     const timestamp = isoTimeNaive.endsWith('Z')
       ? isoTimeNaive
-      : `${isoTimeNaive}:00Z`
+      : hasSeconds
+        ? `${isoTimeNaive}Z`
+        : `${isoTimeNaive}:00Z`
 
     result.push({ timestamp, temperatureC, ghiWm2 })
   }

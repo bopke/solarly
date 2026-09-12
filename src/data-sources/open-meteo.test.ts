@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
+// This fixture is synthetic, illustrative data shaped like a real
+// Open-Meteo `/v1/forecast` response (1-hour spacing, a null-padded tail
+// hour), NOT a captured/recorded live response. Values are hand-picked to
+// exercise day/night and clear/cloudy behavior predictably; they are not
+// observed irradiance or temperature readings.
 import fixture from './__fixtures__/open-meteo-forecast.json'
 import { fetchOpenMeteoForecast } from './open-meteo'
 
@@ -18,7 +23,7 @@ function fixtureFetch(
 }
 
 describe('fetchOpenMeteoForecast', () => {
-  it('normalizes the recorded fixture response into HourlyClimate[], dropping null-padded hours', async () => {
+  it('normalizes the synthetic fixture response into HourlyClimate[], dropping null-padded hours', async () => {
     const fetchImpl = fixtureFetch(fixture)
 
     const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })

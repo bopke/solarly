@@ -18,14 +18,29 @@ case", and built `ghiWm2` by reconstructing it from a cloud-cover forecast
 clear-sky estimate in a now-deleted `clear-sky.ts`). That assumption was
 false: the free, keyless Open-Meteo forecast API does publish irradiance
 directly. Requesting `shortwave_radiation` as an hourly variable returns
-global horizontal irradiance (GHI, instantaneous W/m^2) for exactly this
-use case, alongside `direct_radiation`, `diffuse_radiation`,
+global horizontal irradiance (GHI, W/m^2) for exactly this use case,
+alongside `direct_radiation`, `diffuse_radiation`,
 `direct_normal_irradiance`, and `global_tilted_irradiance` if ever needed.
 This was caught in review (verified live against the API and against
 https://open-meteo.com/en/docs) and is corrected here. The design spec's
 data-sources section (`...m1-design.md:32`) is now slightly stale on this
 point — it is not being edited as part of this ADR, but a future spec pass
 should update it to match.
+
+**Correction to a second earlier claim in this ADR, caught in re-review:**
+an earlier version of this ADR also described `shortwave_radiation` as
+"instantaneous". That is wrong. Open-Meteo's own docs state it plainly:
+`shortwave_radiation` is "shortwave solar radiation as average of the
+preceding hour" — a backward-looking hourly mean, not a point sample.
+Open-Meteo separately publishes a `shortwave_radiation_instant` variable
+("solar radiation averaged over the past hour; use instant for radiation
+at the indicated time") which _is_ instantaneous. This was confirmed both
+against the docs and empirically: on a live pull, the unsuffixed series
+visibly lags the `_instant` series (e.g. an evening hour after sunset
+still reports a small positive `shortwave_radiation` because the sun was
+still up for part of the preceding hour, while `_instant` is already 0).
+See "Instantaneous vs. hourly-mean irradiance" below for why the
+non-instantaneous variable was kept anyway.
 
 ## Decision
 
@@ -85,6 +100,23 @@ should update it to match.
   from the body (best-effort; falls back to just the status if the body
   isn't parseable JSON) and includes it in the thrown error message.
 
+- **Instantaneous vs. hourly-mean irradiance**: `shortwave_radiation` (used
+  here) is a backward-looking hourly mean, not an instantaneous sample —
+  the value stamped at timestamp `HH:00Z` is the average irradiance over
+  `(HH-1):00Z` to `HH:00Z`. `shortwave_radiation_instant` exists and is a
+  genuine point sample at `HH:00Z`, but the hourly mean was kept
+  deliberately: for hourly PV energy, `Wh/m² = mean W/m² × 1 h` exactly,
+  whereas a point sample at the hour boundary is a biased estimator of the
+  hour's actual energy (worse near sunrise/sunset, where irradiance changes
+  fastest within the hour). The trade-off is that pairing this value with a
+  sun position computed exactly _at_ `HH:00Z` (as a solar-position/POA
+  transposition step would) introduces a ~30-minute misalignment between
+  the irradiance interval and the sun-geometry instant — see the
+  `HourlyClimate.ghiWm2` doc comment in `src/data-sources/types.ts` and the
+  Consequences section below. A future `simulation` module (issue #9/#10)
+  that combines this data with `solar-physics` sun-position calculations
+  should account for this rather than treating the two as time-aligned.
+
 - **Shared `HourlyClimate` type**: defined in `src/data-sources/types.ts`
   on this branch since it didn't already exist. A sibling PR for the NASA
   POWER client is being built in parallel and may define this type
@@ -93,10 +125,13 @@ should update it to match.
 
 ## Consequences
 
-- `ghiWm2` in `HourlyClimate` produced by this client is now a genuinely
-  instantaneous, directly-forecasted GHI value from Open-Meteo, not a
-  derived estimate — more accurate than the original cloud-cover
-  attenuation approach, and with strictly less code to maintain.
+- `ghiWm2` in `HourlyClimate` produced by this client is now a real,
+  directly-forecasted GHI value from Open-Meteo (a backward-looking hourly
+  mean, not an instantaneous sample — see above), rather than a derived
+  estimate — more accurate than the original cloud-cover attenuation
+  approach, and with strictly less code to maintain. The ~30-minute
+  interval-vs-instant misalignment described above is a known limitation
+  the future `simulation` module (issue #9/#10) needs to account for.
 - Hours with null-padded source data are simply absent from the result
   rather than present with a wrong or fabricated value; callers that need
   a fixed-length hourly series (e.g. for a chart x-axis) should build it by
@@ -104,5 +139,7 @@ should update it to match.
 - `HourlyClimate` may need a follow-up merge/rename pass once both this PR
   and the NASA POWER client PR exist, per the note in
   `src/data-sources/types.ts`.
-- This ADR keeps its assigned number (`0040`) per the project's decisions
-  README, which reserves this block for this issue's work.
+- This ADR keeps its assigned number (`0040`). `docs/decisions/README.md`
+  has been updated (in this same change) to explicitly permit reserved
+  number blocks for parallel workstreams (0010s, 0020s, 0030s, 0040s, ...),
+  so this number is no longer a gap against an unstated rule.
