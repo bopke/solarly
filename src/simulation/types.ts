@@ -1,7 +1,7 @@
 /**
  * Public types for the `simulation` module. See `runTmySimulation.ts` for
  * the orchestration logic that produces {@link SimulationResult}, and
- * `docs/decisions/0040-tmy-disaggregation-approach.md` for the modeling
+ * `docs/decisions/0080-tmy-disaggregation-approach.md` for the modeling
  * choices behind this shape.
  */
 
@@ -44,7 +44,7 @@ export interface SystemConfig {
    * real geometric shadow-casting (deferred to M3, see the M1 design spec's
    * roadmap section). Stacked multiplicatively with `systemLossesPercent`,
    * as a second independent derate factor rather than summed with it — see
-   * `docs/decisions/0040-tmy-disaggregation-approach.md`.
+   * `docs/decisions/0080-tmy-disaggregation-approach.md`.
    */
   manualShadingPercent: number
 }

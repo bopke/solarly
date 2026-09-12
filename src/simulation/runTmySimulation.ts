@@ -9,7 +9,7 @@
  * Algorithm: clearness-index disaggregation of NASA POWER's monthly daily
  * mean insolation into an hourly curve for a representative day per
  * month, via `solar-physics`'s clear-sky and GHI-decomposition models.
- * See `docs/decisions/0040-tmy-disaggregation-approach.md` for the full
+ * See `docs/decisions/0080-tmy-disaggregation-approach.md` for the full
  * rationale and known limitations.
  */
 
