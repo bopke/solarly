@@ -15,6 +15,8 @@ export { ErrorState } from './ErrorState'
 export type { ErrorStateProps } from './ErrorState'
 export { LoadingSkeleton } from './LoadingSkeleton'
 export type { LoadingSkeletonProps } from './LoadingSkeleton'
+export { DailyChart } from './DailyChart'
+export type { DailyChartProps } from './DailyChart'
 export {
   TABS_BY_MODE,
   TAB_LABELS,

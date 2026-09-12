@@ -1,0 +1,42 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.sliderLabel {
+  font-size: 0.875rem;
+  color: var(--shell-text);
+}
+
+.monthName {
+  font-weight: 600;
+}
+
+.slider {
+  width: 100%;
+  max-width: 24rem;
+  accent-color: var(--shell-accent);
+}
+
+.summary {
+  font-size: 0.8125rem;
+  color: var(--shell-muted);
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 12rem;
+  color: var(--shell-muted);
+  font-size: 0.9375rem;
+  text-align: center;
+}
