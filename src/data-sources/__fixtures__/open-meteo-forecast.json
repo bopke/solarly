@@ -1,0 +1,28 @@
+{
+  "latitude": 52.52,
+  "longitude": 13.41,
+  "generationtime_ms": 0.123,
+  "utc_offset_seconds": 0,
+  "timezone": "UTC",
+  "timezone_abbreviation": "UTC",
+  "elevation": 38.0,
+  "hourly_units": {
+    "time": "iso8601",
+    "temperature_2m": "°C",
+    "cloud_cover": "%"
+  },
+  "hourly": {
+    "time": [
+      "2026-06-21T00:00",
+      "2026-06-21T03:00",
+      "2026-06-21T06:00",
+      "2026-06-21T09:00",
+      "2026-06-21T12:00",
+      "2026-06-21T15:00",
+      "2026-06-21T18:00",
+      "2026-06-21T21:00"
+    ],
+    "temperature_2m": [14.2, 12.8, 15.1, 19.4, 23.6, 24.8, 21.3, 16.7],
+    "cloud_cover": [90, 80, 60, 30, 0, 20, 55, 95]
+  }
+}

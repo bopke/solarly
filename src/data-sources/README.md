@@ -51,3 +51,16 @@ these against the live API:
   based on a real `(-140, -85)` API response rather than a byte-for-byte
   capture; used to lock in that a real `0.0` is preserved rather than
   mistaken for the fill sentinel.
+## Open-Meteo (live forecast)
+
+`open-meteo.ts` fetches an hourly cloud-cover + temperature forecast from
+the Open-Meteo forecast API and normalizes it into `HourlyClimate[]`.
+Open-Meteo doesn't publish irradiance for this use case, so GHI is
+estimated by attenuating a clear-sky GHI estimate (`clear-sky.ts`, Haurwitz
+model driven by solar elevation) against the forecast cloud cover, using
+the Kasten & Czeplak (1980) empirical cloud-cover attenuation curve. See
+`docs/decisions/0040-open-meteo-client.md` for the full rationale.
+
+`types.ts` defines the shared `HourlyClimate` shape. A sibling PR for the
+NASA POWER client may also define this type independently — reconcile into
+one definition if both land.
