@@ -174,18 +174,6 @@ describe('geocode', () => {
     expect(second).toHaveLength(2)
   })
 
-  it('deduplicates concurrent identical queries into a single fetch', async () => {
-    const fetchMock = mockFetchAlways(berlinFixture)
-
-    const [first, second] = await Promise.all([
-      callGeocode('Berlin'),
-      geocode('Berlin'),
-    ])
-
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(second).toEqual(first)
-  })
-
   it('preserves AbortError identity when the caller aborts a queued request', async () => {
     const fetchMock = mockFetchAlways(berlinFixture)
     const controller = new AbortController()

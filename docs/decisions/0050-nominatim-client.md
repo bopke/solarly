@@ -109,9 +109,15 @@ a typical server-side API client to this environment:
   M1 and can be revisited if usage patterns show it's needed. Callers
   always receive a fresh copy of the cached array, so mutating a returned
   result (sorting, pushing, etc.) never leaks between callers. Concurrent
-  identical queries share one in-flight request instead of each triggering
-  their own `fetch`, via a separate `Map` of in-flight promises keyed the
-  same way.
+  identical queries are _not_ deduplicated into a single in-flight request:
+  an earlier revision added this, but it coupled unrelated callers'
+  cancellation — a joined caller inherited the leader's abort, a joined
+  caller's own signal/timeout was ignored, and an aborted-but-joined
+  request could resolve successfully instead of rejecting — which breaks
+  the abort contract below. Reverted in favor of each call making its own
+  independent request; the cache alone already satisfies the usage
+  policy's caching requirement for the dominant case (repeated sequential
+  queries).
 - **Request timeout and abort handling.** Each request is bounded by
   `AbortSignal.timeout(...)` (default 9s, overridable via
   `options.timeoutMs`), combined with any caller-supplied `AbortSignal`

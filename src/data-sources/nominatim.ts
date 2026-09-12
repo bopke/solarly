@@ -48,14 +48,6 @@ const REQUEST_TIMEOUT_MS = 9000
 // docs/decisions/0050-nominatim-client.md.
 const resultCache = new Map<string, GeocodeResult[]>()
 
-// In-flight requests, keyed the same way as `resultCache`. Two concurrent
-// calls for the same (query, limit) — e.g. a typeahead firing before the
-// previous keystroke's request has resolved — share the same underlying
-// request instead of both missing the cache and hitting the network, which
-// the caching policy clause above applies to just as much as repeated
-// sequential queries.
-const inFlightRequests = new Map<string, Promise<GeocodeResult[]>>()
-
 function cacheKey(normalizedQuery: string, limit: number): string {
   return JSON.stringify([normalizedQuery, limit])
 }
@@ -91,8 +83,7 @@ const scheduleNominatimRequest = createThrottle(MIN_REQUEST_INTERVAL_MS)
  * - Requests are throttled client-side to at most ~1/second, per
  *   Nominatim's public-instance usage policy, and identical (normalized)
  *   queries are served from an in-memory cache rather than re-fetched, per
- *   the same policy's caching requirement. Concurrent identical queries
- *   share a single in-flight request rather than each triggering a fetch.
+ *   the same policy's caching requirement.
  * - Returned arrays are copies: mutating a result you got back from one
  *   call (sorting, pushing, etc.) never affects what other callers see for
  *   the same cached query.
@@ -119,12 +110,6 @@ export async function geocode(
   const cached = resultCache.get(key)
   if (cached) {
     return [...cached]
-  }
-
-  const inFlight = inFlightRequests.get(key)
-  if (inFlight) {
-    const results = await inFlight
-    return [...results]
   }
 
   // Bound the whole request (queue wait + fetch) with a timeout, combined
@@ -200,12 +185,7 @@ export async function geocode(
       )
   }, signal)
 
-  inFlightRequests.set(key, request)
-  try {
-    const results = await request
-    resultCache.set(key, results)
-    return [...results]
-  } finally {
-    inFlightRequests.delete(key)
-  }
+  const results = await request
+  resultCache.set(key, results)
+  return [...results]
 }
