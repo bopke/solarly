@@ -3,10 +3,13 @@
  *
  * Computes the sun's altitude and azimuth angle for a given geographic
  * location and UTC timestamp, to roughly the same precision as NOAA's
- * published solar calculator (https://gml.noaa.gov/grad/solcalc/), i.e.
- * on the order of ~0.01 degrees. The algorithm is transcribed from NOAA's
- * published equations (https://gml.noaa.gov/grad/solcalc/solareqns.PDF)
- * and cross-checked against the formulas in NOAA's own calculator source
+ * published solar calculator (https://gml.noaa.gov/grad/solcalc/):
+ * altitude to ~0.01 degrees, azimuth to ~0.01 degrees typically but
+ * degrading to ~0.05-0.1 degrees near solar zenith, where the azimuth
+ * formula is inherently ill-conditioned. The algorithm is transcribed
+ * from NOAA's published equations
+ * (https://gml.noaa.gov/grad/solcalc/solareqns.PDF) and cross-checked
+ * against the formulas in NOAA's own calculator source
  * (https://gml.noaa.gov/grad/solcalc/main.js). See
  * docs/decisions/0010-solar-position-algorithm.md for the algorithm
  * choice and accuracy notes.
@@ -141,7 +144,7 @@ function atmosphericRefractionDeg(elevationDeg: number): number {
             (103.4 + elevationDeg * (-12.79 + elevationDeg * 0.711)))
   } else {
     const te = Math.tan(degToRad(elevationDeg))
-    correctionArcsec = -20.772 / te
+    correctionArcsec = -20.774 / te
   }
 
   return correctionArcsec / 3600.0
@@ -149,7 +152,9 @@ function atmosphericRefractionDeg(elevationDeg: number): number {
 
 /**
  * Computes the sun's altitude and azimuth for a location and UTC instant,
- * using NOAA's simplified solar position algorithm (~0.01 degree accuracy).
+ * using NOAA's simplified solar position algorithm (~0.01 degree accuracy
+ * for altitude; azimuth is typically ~0.01 degree but degrades to
+ * ~0.05-0.1 degree near solar zenith).
  *
  * @param lat Latitude in degrees, positive north (-90 to 90).
  * @param lon Longitude in degrees, positive east (-180 to 180).
@@ -218,20 +223,34 @@ export function sunPosition(
   const correctedElevationDeg = elevationDeg + refractionDeg
 
   const zenithRad = degToRad(zenithDeg)
-  const azimuthCosArg = Math.max(
-    -1,
-    Math.min(
-      1,
-      (Math.sin(latRad) * Math.cos(zenithRad) - Math.sin(declRad)) /
-        (Math.cos(latRad) * Math.sin(zenithRad)),
-    ),
-  )
-  const azimuthBase = radToDeg(Math.acos(azimuthCosArg))
 
-  const azimuthDeg =
-    hourAngleDeg > 0
-      ? normalizeDegrees(azimuthBase + 180)
-      : normalizeDegrees(540 - azimuthBase)
+  // NOAA's azimuth formula divides by cos(lat) * sin(zenith), which
+  // approaches zero near the poles and at solar zenith/nadir. Rather than
+  // clamping the resulting near-infinite ratio into [-1, 1] (which yields a
+  // plausible-looking but wrong azimuth), replicate NOAA's own guard
+  // (main.js:303-322): below this threshold, the azimuth is degenerate and
+  // NOAA reports a fixed value based on hemisphere instead of computing it.
+  const azimuthDenom = Math.cos(latRad) * Math.sin(zenithRad)
+
+  let azimuthDeg: number
+  if (Math.abs(azimuthDenom) > 0.001) {
+    const azimuthCosArg = Math.max(
+      -1,
+      Math.min(
+        1,
+        (Math.sin(latRad) * Math.cos(zenithRad) - Math.sin(declRad)) /
+          azimuthDenom,
+      ),
+    )
+    const azimuthBase = radToDeg(Math.acos(azimuthCosArg))
+
+    azimuthDeg =
+      hourAngleDeg > 0
+        ? normalizeDegrees(azimuthBase + 180)
+        : normalizeDegrees(540 - azimuthBase)
+  } else {
+    azimuthDeg = lat > 0 ? 180 : 0
+  }
 
   return { altitude: correctedElevationDeg, azimuth: azimuthDeg }
 }

@@ -16,7 +16,18 @@ import { sunPosition } from './sunPosition'
  * See docs/decisions/0010-solar-position-algorithm.md for details.
  *
  * Tolerance: 0.01 degrees, per the module's target accuracy — enforced via
- * `toBeCloseTo(expected, 2)` below (max diff 0.005°).
+ * `toBeCloseTo(expected, 2)` below (max diff 0.005°). Note this tolerance
+ * applies to altitude and to azimuth away from solar zenith; azimuth's
+ * accuracy degrades to ~0.05-0.1 degrees near zenith because the azimuth
+ * formula is inherently ill-conditioned there (see ADR 0010). None of the
+ * cases below are near zenith.
+ *
+ * The two exactly-at/near-the-pole cases assert an exact azimuth (`toBe`,
+ * not `toBeCloseTo`) because that value isn't a numerically-approximated
+ * angle — it's NOAA's explicit degenerate-input guard (main.js:303-322)
+ * firing and returning a fixed 180/0 based on hemisphere. See the
+ * `azimuthDenom` guard in sunPosition.ts and ADR 0010's "Consequences"
+ * section.
  */
 
 describe('sunPosition', () => {
@@ -80,6 +91,67 @@ describe('sunPosition', () => {
     )
     expect(result.altitude).toBeCloseTo(28.9106, 2)
     expect(result.azimuth).toBeCloseTo(68.6631, 2)
+  })
+
+  it('Berlin, Germany, mid-afternoon (post-solar-noon, hourAngle > 0)', () => {
+    // lat=52.52, lon=13.405, 2024-06-20T15:00:00Z (Berlin, mid-afternoon)
+    const result = sunPosition(52.52, 13.405, new Date('2024-06-20T15:00:00Z'))
+    expect(result.altitude).toBeCloseTo(37.7355, 2)
+    expect(result.azimuth).toBeCloseTo(259.5042, 2)
+  })
+
+  it('Denver, CO, afternoon — additional azimuth spread (west-southwest)', () => {
+    // lat=39.7392, lon=-104.9903, 2024-09-23T22:00:00Z
+    const result = sunPosition(
+      39.7392,
+      -104.9903,
+      new Date('2024-09-23T22:00:00Z'),
+    )
+    expect(result.altitude).toBeCloseTo(31.2544, 2)
+    expect(result.azimuth).toBeCloseTo(238.7735, 2)
+  })
+
+  it('Nairobi, Kenya — additional azimuth spread (near north)', () => {
+    // lat=-1.2833, lon=36.8167, 2024-06-20T09:00:00Z
+    const result = sunPosition(
+      -1.2833,
+      36.8167,
+      new Date('2024-06-20T09:00:00Z'),
+    )
+    expect(result.altitude).toBeCloseTo(63.9086, 2)
+    expect(result.azimuth).toBeCloseTo(18.1789, 2)
+  })
+
+  it('Boulder, CO, below the horizon at night — exercises the atmospheric refraction branch for elevation <= -0.575deg', () => {
+    // lat=40.015, lon=-105.2705, 2024-06-21T05:00:00Z (deep night)
+    const result = sunPosition(
+      40.015,
+      -105.2705,
+      new Date('2024-06-21T05:00:00Z'),
+    )
+    expect(result.altitude).toBeCloseTo(-20.3632, 2)
+    expect(result.azimuth).toBeCloseTo(329.9855, 2)
+  })
+
+  it('exactly at the north pole — degenerate azimuth denominator, matches NOAA guard (fixed 180deg, not a plausible-looking interpolated value)', () => {
+    // lat=90, lon=0, 2024-06-20T12:00:00Z
+    const result = sunPosition(90, 0, new Date('2024-06-20T12:00:00Z'))
+    expect(result.altitude).toBeCloseTo(23.4751, 2)
+    expect(result.azimuth).toBe(180)
+  })
+
+  it('0.0001deg from the north pole — same degenerate-azimuth guard applies, no 180deg discontinuity vs. lat=90', () => {
+    // lat=89.9999, lon=0, 2024-06-20T12:00:00Z
+    const result = sunPosition(89.9999, 0, new Date('2024-06-20T12:00:00Z'))
+    expect(result.altitude).toBeCloseTo(23.4752, 2)
+    expect(result.azimuth).toBe(180)
+  })
+
+  it('0.0001deg from the south pole — degenerate-azimuth guard, southern-hemisphere fixed value', () => {
+    // lat=-89.9999, lon=0, 2024-06-20T12:00:00Z
+    const result = sunPosition(-89.9999, 0, new Date('2024-06-20T12:00:00Z'))
+    expect(result.altitude).toBeCloseTo(-23.4247, 2)
+    expect(result.azimuth).toBe(0)
   })
 
   it('is a pure function: repeated calls with the same inputs return the same result', () => {

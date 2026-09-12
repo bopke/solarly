@@ -59,19 +59,36 @@ decision:
 
 ## Consequences
 
-- Accuracy is ~0.01° for the 1800-2200 date range, which comfortably
-  covers this tool's use case (near-term generation estimates); it is not
-  suitable for historical/far-future astronomical work, but nothing in
-  the M1 spec needs that.
+- Accuracy for the 1800-2200 date range is ~0.01° for `altitude`, which
+  comfortably covers this tool's use case (near-term generation
+  estimates). `azimuth` is typically similarly accurate but degrades to
+  ~0.05-0.1° (worst observed: ~0.067° in a 3000-sample validation against
+  NREL's SPA) near solar zenith, where the azimuth formula's conditioning
+  is inherently worse — this is expected behavior of the algorithm, not
+  an implementation bug, but a downstream reader sizing an error budget
+  should not assume azimuth is as tight as altitude near zenith. Neither
+  figure is suitable for historical/far-future astronomical work, but
+  nothing in the M1 spec needs that.
 - Near the poles or exactly at solar zenith/nadir, the azimuth formula's
-  denominator (`cos(lat) * sin(zenith)`) approaches zero, which can
-  produce `NaN`/unstable azimuth values. `altitude` remains well-defined
-  in all cases; the module does not currently special-case these
-  degenerate inputs, since NOAA's own calculator has the same limitation
-  and no M1 use case (rooftop PV siting) operates at the poles or queries
-  the exact zenith instant. Documented here as a known edge case rather
-  than silently handled, in case `simulation` or `ui` ever need to guard
-  against it directly.
+  denominator (`cos(lat) * sin(zenith)`) approaches zero. Naively clamping
+  the resulting near-infinite ratio into `[-1, 1]` (as an earlier version
+  of this module did) does **not** produce `NaN` — it silently returns a
+  plausible-looking but wrong azimuth, e.g. `lat=90` returned
+  `azimuth=0` exactly, and `lat=89.9999` returned `azimuth≈179.6`, a
+  ~180° discontinuity across 0.0001° of latitude. That failure mode is
+  more dangerous than `NaN` for a foundational module, since it doesn't
+  visibly propagate.
+
+  NOAA's own calculator source (`main.js:303-322`) explicitly guards this
+  case (`if (Math.abs(azDenom) > 0.001) { ...compute... } else { azimuth
+= latitude > 0 ? 180 : 0 }`) — this module replicates that guard
+  exactly, so it matches NOAA's actual behavior at the poles/zenith
+  rather than diverging from it. (An earlier version of this ADR
+  incorrectly claimed NOAA's calculator shared this module's original
+  unguarded limitation; it does not — NOAA guards it, and so does this
+  module now.) `altitude` remains well-defined and accurate in all cases;
+  only `azimuth` needs the guard.
+
 - Downstream `solar-physics` functions (clear-sky irradiance, POA
   transposition) can rely on `altitude` already including refraction —
   they should not re-apply their own refraction correction.
