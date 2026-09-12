@@ -1,0 +1,60 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: 100%;
+  min-height: 320px;
+}
+
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.summaryLabel {
+  font-size: 0.85rem;
+  color: var(--shell-muted);
+}
+
+.summaryValue {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--shell-text);
+}
+
+.chartWrapper {
+  flex: 1;
+  min-height: 260px;
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 280px;
+  color: var(--shell-muted);
+  text-align: center;
+}
+
+.tooltip {
+  padding: 0.5rem 0.75rem;
+  background: var(--shell-surface);
+  border: 1px solid var(--shell-border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.tooltipMonth {
+  margin: 0 0 0.15rem;
+  font-size: 0.8rem;
+  color: var(--shell-muted);
+}
+
+.tooltipValue {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--shell-text);
+}
