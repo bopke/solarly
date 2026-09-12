@@ -59,10 +59,16 @@ turbidity climatology constant." A few things needed pinning down:
   band, rather than skewed toward either the very-clean or very-hazy end —
   it is a rough placeholder, not a per-location lookup.
 - **Solar constant.** Fixed at 1361 W/m², a commonly cited modern
-  satellite-era mean total solar irradiance value. The function has no
-  date input, so the ~±3.3% annual eccentricity variation in Earth-Sun
-  distance isn't modeled — consistent with the fixed-turbidity
-  simplification below.
+  satellite-era (Kopp & Lean) mean total solar irradiance value. The
+  function has no date input, so the ~±3.3% annual eccentricity variation
+  in Earth-Sun distance isn't modeled — consistent with the fixed-turbidity
+  simplification below. Note this is a slightly different vintage than the
+  ~1364-1367 W/m² solar constant the Ineichen regression coefficients
+  (`cg1`, `cg2`, the beam coefficient, `bnci_2`) were originally fit
+  against; pvlib's own reference implementation defaults `dni_extra` to
+  1364 for the same model. The mismatch is under 0.5% and was a deliberate
+  choice to use the more accurate modern TSI value here, but it is worth
+  naming explicitly rather than only justifying 1361 on its own terms.
 
 ## Decision
 
@@ -96,23 +102,49 @@ turbidity climatology constant." A few things needed pinning down:
 
 ## Consequences
 
-- `clearSkyIrradiance` stays a pure, dependency-free function taking only
-  `(sunAltitude, turbidity?)`, consistent with `solar-physics`'s "no I/O"
-  constraint, and composes cleanly with `sunPosition().altitude` while
-  remaining independently testable/callable.
-- Because turbidity is fixed, absolute irradiance magnitudes for any given
-  real location will systematically differ from ground truth by however
-  much that location's actual climatology differs from TL=3.5 (clearer
-  sites will be modeled as hazier than reality and vice versa) — this
-  imprecision propagates into the TMY/Live simulation pipeline (issue #9)
-  and should be called out if/when M1's overall accuracy is evaluated
-  against real generation data.
-- Because there's no site-altitude correction, high-elevation locations
-  (e.g. mountain rooftop installs) will have their clear-sky irradiance
-  modestly underestimated (thinner atmosphere at altitude means less
-  attenuation than sea level assumes). Not expected to matter much for
-  typical residential rooftop siting, but worth revisiting if the location
-  model ever gains an elevation field.
-- Upgrading turbidity from a fixed constant to a real climatology lookup
-  later only requires changing what value callers pass in for `turbidity`
-  — no change to this function's model/signature.
+Ranked roughly by expected error magnitude (largest/most predictable
+first), since it's easy to over-index on whichever limitation is discussed
+most, not the one that actually dominates:
+
+1. **No eccentricity correction (dominant, systematic, most predictable).**
+   `clearSkyIrradiance` has no date input, so it can't scale the solar
+   constant by Earth-Sun distance, which varies with a ~±3.3% swing over
+   the year (closest at perihelion in early January, farthest at aphelion
+   in early July). Every irradiance value this function returns is off by
+   up to that much in a fully predictable, calendar-driven way — this is
+   larger than the fixed-turbidity error for many locations/seasons, and
+   unlike the turbidity error, it's a pure function of date, not of
+   location climatology, so it's arguably the more embarrassing gap to
+   have unaddressed: it could be fixed with just a day-of-year input and a
+   one-line formula, with no external data dependency, unlike turbidity.
+   Left as a known limitation for now because `clearSkyIrradiance` was
+   scoped in the M1 design spec to take sun altitude only; revisit if a
+   date/day-of-year parameter is added.
+2. **Fixed Linke turbidity.** Because turbidity is fixed, absolute
+   irradiance magnitudes for any given real location will systematically
+   differ from ground truth by however much that location's actual
+   climatology differs from TL=3.5 (clearer sites will be modeled as
+   hazier than reality and vice versa) — this imprecision propagates into
+   the TMY/Live simulation pipeline (issue #9) and should be called out
+   if/when M1's overall accuracy is evaluated against real generation
+   data. Unlike the eccentricity gap above, this requires an external
+   climatology dataset to fix properly, not just a formula change.
+3. **No site-altitude correction.** High-elevation locations (e.g.
+   mountain rooftop installs) will have their clear-sky irradiance
+   modestly underestimated (thinner atmosphere at altitude means less
+   attenuation than sea level assumes). Not expected to matter much for
+   typical residential rooftop siting, but worth revisiting if the
+   location model ever gains an elevation field.
+4. **Solar-constant vintage mismatch (~0.5%, see above).** Smallest of the
+   four; noted for completeness rather than because it's expected to
+   matter in practice.
+
+Upgrading turbidity from a fixed constant to a real climatology lookup
+later only requires changing what value callers pass in for `turbidity` —
+no change to this function's model/signature. `clearSkyIrradiance` stays a
+pure, dependency-free function taking only `(sunAltitude, turbidity?)`,
+consistent with `solar-physics`'s "no I/O" constraint, and composes
+cleanly with `sunPosition().altitude` while remaining independently
+testable/callable — see the refraction-coupling note in
+`clearSkyIrradiance.ts`'s module doc for the one place that composition
+has an implicit contract worth watching.
