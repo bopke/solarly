@@ -31,7 +31,7 @@ failing "Workers Builds: solarly" check on every PR.
   not in this repo) and deploys via `wrangler deploy` directly — the
   GitHub Actions workflow was not just unnecessary but would have
   actively conflicted with it (deploying via the old `wrangler pages
-  deploy` command against what is now a Workers-shaped config).
+deploy` command against what is now a Workers-shaped config).
 - `.github/workflows/ci.yml` (lint/format/test/build, independent of any
   deploy credentials) is unaffected and still runs on every PR.
 

@@ -4,6 +4,13 @@
   width: 100%;
 }
 
-.emptyWrapper {
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 100%;
+  min-height: 12rem;
+  color: var(--shell-muted);
+  font-size: 0.9375rem;
+  text-align: center;
 }
