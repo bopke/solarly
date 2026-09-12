@@ -1,7 +1,10 @@
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { MonthlyChartTab } from './MonthlyChartTab'
-import type { MonthlySimulation, SimulationResult } from '../simulation/types'
+import type {
+  MonthlySimulation,
+  TmySimulationResult,
+} from '../simulation/types'
 
 const BASE_LOCATION = { lat: 45, lon: 10 }
 const BASE_SYSTEM_CONFIG = {
@@ -28,8 +31,9 @@ function makeMonth(month: number, monthlyTotalKWh: number): MonthlySimulation {
   }
 }
 
-function makeResult(months: MonthlySimulation[]): SimulationResult {
+function makeResult(months: MonthlySimulation[]): TmySimulationResult {
   return {
+    mode: 'tmy',
     location: BASE_LOCATION,
     systemConfig: BASE_SYSTEM_CONFIG,
     referenceYear: 2025,

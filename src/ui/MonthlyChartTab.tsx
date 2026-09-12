@@ -9,7 +9,7 @@ import {
 } from 'recharts'
 import type { TooltipContentProps } from 'recharts'
 import type { ReactElement } from 'react'
-import type { SimulationResult } from '../simulation/types'
+import type { TmySimulationResult } from '../simulation/types'
 import styles from './MonthlyChartTab.module.css'
 
 export interface MonthlyChartTabProps {
@@ -20,7 +20,7 @@ export interface MonthlyChartTabProps {
    * over rendering this tab at all. Renders its own empty message if a
    * caller shows this tab anyway.
    */
-  result: SimulationResult | undefined
+  result: TmySimulationResult | undefined
 }
 
 /** Short month labels, index 0 = January, matching `MonthlySimulation.month` (1-12). */
@@ -55,7 +55,7 @@ interface MonthlyChartPoint {
  * the chart's month spacing consistent regardless of which case applies,
  * rather than compressing the bars to however many months came back.
  */
-function buildMonthlySeries(result: SimulationResult): MonthlyChartPoint[] {
+function buildMonthlySeries(result: TmySimulationResult): MonthlyChartPoint[] {
   const byMonth = new Map(result.months.map((m) => [m.month, m]))
   return MONTH_LABELS.map((label, index) => {
     const month = index + 1
@@ -155,6 +155,7 @@ export function MonthlyChartTab({ result }: MonthlyChartTabProps) {
               name="Monthly total"
               fill="var(--shell-accent)"
               radius={[4, 4, 0, 0]}
+              isAnimationActive={false}
             />
           </BarChart>
         </ResponsiveContainer>

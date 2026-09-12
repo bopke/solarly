@@ -4,7 +4,7 @@ import { DailyChart } from './DailyChart'
 import type {
   HourlyPoint,
   MonthlySimulation,
-  SimulationResult,
+  TmySimulationResult,
 } from '../simulation'
 
 function makeHourly(peakW: number): HourlyPoint[] {
@@ -31,8 +31,9 @@ function makeMonth(month: number, peakW: number): MonthlySimulation {
   }
 }
 
-function makeResult(months: MonthlySimulation[]): SimulationResult {
+function makeResult(months: MonthlySimulation[]): TmySimulationResult {
   return {
+    mode: 'tmy',
     location: { lat: 52.2, lon: 21.0 },
     systemConfig: {
       tiltDeg: 30,

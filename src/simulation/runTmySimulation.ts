@@ -28,7 +28,7 @@ import type {
   HourlyPoint,
   Location,
   MonthlySimulation,
-  SimulationResult,
+  TmySimulationResult,
   SystemConfig,
 } from './types.ts'
 
@@ -330,7 +330,7 @@ function simulateMonth(
 }
 
 /**
- * Builds a full {@link SimulationResult} from already-fetched
+ * Builds a full {@link TmySimulationResult} from already-fetched
  * `MonthlyClimateNormal[]` data, running the clearness-index
  * disaggregation + full solar-physics pipeline for each month. Split out
  * from `runTmySimulation` so integration tests can wire fixture climate
@@ -342,7 +342,7 @@ export function buildTmySimulationResult(
   systemConfig: SystemConfig,
   normals: MonthlyClimateNormal[],
   referenceYear: number = REFERENCE_YEAR,
-): SimulationResult {
+): TmySimulationResult {
   const months = normals
     .map((normal) =>
       simulateMonth(location, systemConfig, normal, referenceYear),
@@ -352,6 +352,7 @@ export function buildTmySimulationResult(
   const annualTotalKWh = months.reduce((sum, m) => sum + m.monthlyTotalKWh, 0)
 
   return {
+    mode: 'tmy',
     location,
     systemConfig,
     referenceYear,
@@ -375,7 +376,7 @@ export function buildTmySimulationResult(
 export async function runTmySimulation({
   location,
   systemConfig,
-}: RunTmySimulationInput): Promise<SimulationResult> {
+}: RunTmySimulationInput): Promise<TmySimulationResult> {
   const normals = await fetchNasaPowerClimateNormals({
     latitude: location.lat,
     longitude: location.lon,

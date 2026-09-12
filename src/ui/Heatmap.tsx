@@ -1,10 +1,10 @@
-import type { SimulationResult } from '../simulation/types'
+import type { TmySimulationResult } from '../simulation/types'
 import { powerToColor, SEQUENTIAL_BLUE_RAMP } from './heatmapColorScale'
 import styles from './Heatmap.module.css'
 
 export interface HeatmapProps {
   /** TMY simulation result to render, or `undefined` before one exists. */
-  result: SimulationResult | undefined
+  result: TmySimulationResult | undefined
 }
 
 const MONTH_ABBR = [
@@ -36,7 +36,7 @@ const CHART_W_PADDING = 8
  *
  * **Sparse-data rendering approach:** `SimulationResult` only contains one
  * representative day per calendar month (12 points along the day-of-year
- * axis, not 365) — see `docs/decisions/0040-tmy-disaggregation-approach.md`
+ * axis, not 365) — see `docs/decisions/0080-tmy-disaggregation-approach.md`
  * ("Representative-day-per-month, not a full 365-day simulation"). This
  * component renders that as **12 discrete columns, one per representative
  * day, labeled by month** (option (a) from issue #16) rather than

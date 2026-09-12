@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { SimulationResult } from '../simulation'
+import type { TmySimulationResult } from '../simulation'
 import styles from './DailyChart.module.css'
 
 const MONTH_NAMES = [
@@ -36,7 +36,7 @@ export interface DailyChartProps {
    * empty `months` array (e.g. a location with no usable NASA POWER
    * coverage) on its own.
    */
-  result?: SimulationResult
+  result?: TmySimulationResult
 }
 
 /**

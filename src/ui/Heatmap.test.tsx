@@ -5,7 +5,7 @@ import { powerToColor } from './heatmapColorScale'
 import type {
   HourlyPoint,
   MonthlySimulation,
-  SimulationResult,
+  TmySimulationResult,
 } from '../simulation/types'
 
 function makeHourly(peakW: number): HourlyPoint[] {
@@ -35,8 +35,9 @@ function makeMonth(month: number, peakW: number): MonthlySimulation {
   }
 }
 
-function makeResult(months: MonthlySimulation[]): SimulationResult {
+function makeResult(months: MonthlySimulation[]): TmySimulationResult {
   return {
+    mode: 'tmy',
     location: { lat: 33.45, lon: -112.07 },
     systemConfig: {
       tiltDeg: 20,

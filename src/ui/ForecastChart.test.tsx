@@ -1,11 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { ForecastChart } from './ForecastChart'
-import type { HourlyPowerPoint, SimulationResult } from '../simulation'
+import type { HourlyPowerPoint, LiveSimulationResult } from '../simulation'
 
 const LOCATION = { lat: 52.52, lon: 13.41 }
 
-function makeResult(hourlyWattsSeries: HourlyPowerPoint[]): SimulationResult {
+function makeResult(
+  hourlyWattsSeries: HourlyPowerPoint[],
+): LiveSimulationResult {
   return { mode: 'live', location: LOCATION, hourlyWattsSeries }
 }
 
@@ -39,7 +41,7 @@ describe('ForecastChart', () => {
     expect(svg).toBeInTheDocument()
     expect(svg?.querySelectorAll('path').length).toBeGreaterThan(0)
     // No empty-state copy should be shown alongside real data.
-    expect(screen.queryByText(/no location selected/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/click update/i)).not.toBeInTheDocument()
   })
 
   it('renders without throwing when the series has gaps (missing hours)', () => {
@@ -60,17 +62,22 @@ describe('ForecastChart', () => {
     expect(svg?.querySelectorAll('path').length).toBeGreaterThan(0)
   })
 
-  it('shows the empty state when result is undefined', () => {
+  it('shows an empty state describing its own condition when result is undefined', () => {
     render(<ForecastChart result={undefined} />)
 
-    expect(screen.getByText(/no location selected/i)).toBeInTheDocument()
+    // Distinct from the shared `EmptyState`'s "No location selected" — a
+    // location can be (and, per PR #43 review finding #2, usually is)
+    // already selected when this renders, e.g. right after a TMY -> Live
+    // mode switch before Update has been clicked.
+    expect(screen.getByText(/click update/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no location selected/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('forecast-chart')).not.toBeInTheDocument()
   })
 
   it('shows the empty state when hourlyWattsSeries is empty', () => {
     render(<ForecastChart result={makeResult([])} />)
 
-    expect(screen.getByText(/no location selected/i)).toBeInTheDocument()
+    expect(screen.getByText(/click update/i)).toBeInTheDocument()
     expect(screen.queryByTestId('forecast-chart')).not.toBeInTheDocument()
   })
 })
