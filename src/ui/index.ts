@@ -15,8 +15,12 @@ export { ErrorState } from './ErrorState'
 export type { ErrorStateProps } from './ErrorState'
 export { LoadingSkeleton } from './LoadingSkeleton'
 export type { LoadingSkeletonProps } from './LoadingSkeleton'
-export { ForecastChart } from './ForecastChart'
-export type { ForecastChartProps } from './ForecastChart'
+export { Heatmap } from './Heatmap'
+export type { HeatmapProps } from './Heatmap'
+export { DailyChart } from './DailyChart'
+export type { DailyChartProps } from './DailyChart'
+export { MonthlyChartTab } from './MonthlyChartTab'
+export type { MonthlyChartTabProps } from './MonthlyChartTab'
 export {
   TABS_BY_MODE,
   TAB_LABELS,

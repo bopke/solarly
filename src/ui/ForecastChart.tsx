@@ -8,8 +8,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { SimulationResult } from '../simulation'
-import { EmptyState } from './EmptyState'
+import type { LiveSimulationResult } from '../simulation'
 import styles from './ForecastChart.module.css'
 
 export interface ForecastChartProps {
@@ -21,7 +20,7 @@ export interface ForecastChartProps {
    * but the component handles it (and an empty `hourlyWattsSeries`)
    * gracefully rather than assuming a caller always has data ready.
    */
-  result: SimulationResult | undefined
+  result: LiveSimulationResult | undefined
 }
 
 /** One point fed to Recharts: `watts` is `null` for a synthetic gap marker (see {@link buildChartData}). */
@@ -75,33 +74,49 @@ function buildChartData(
 }
 
 /**
- * Formats an epoch-ms tick/tooltip timestamp in the *viewer's own browser
- * timezone* rather than UTC.
+ * Formats an epoch-ms tick/tooltip timestamp in the *panel's local time*
+ * when it's known, falling back to the *viewer's own browser timezone*
+ * otherwise.
  *
  * Choice/tradeoff (see issue #17 and ADR 0016's live-mode gap note):
- * `SimulationResult` doesn't currently carry the panel location's timezone,
- * so there's no way to bucket these hours into the *panel's* local days
- * exactly right. Two honest options: label everything in UTC, or format
- * using the viewer's own browser timezone via `Intl.DateTimeFormat`. This
- * picks the latter — for the common case (someone checking a forecast for
- * their own roof) the viewer's timezone usually *is* the panel's timezone,
- * so times read as "3pm" rather than an offset viewers must mentally
- * convert. It reads slightly wrong for the minority checking a forecast for
- * a distant location, but "your local time" is verifiably the more useful
- * default for most Solarly users. Revisit once `SimulationResult` carries
- * the location's IANA timezone (tracked as a gap from issue #10's review).
+ * `SimulationResult` doesn't carry a real IANA timezone for the panel's
+ * location, only (as of PR #43's review finding #5) the picker's
+ * longitude-derived, whole-hour `utcOffsetHours` approximation. When
+ * that's present, timestamps are shifted by that offset and formatted with
+ * `timeZone: 'UTC'` — `Intl.DateTimeFormat` has no way to format "UTC+N"
+ * directly for an arbitrary N, so shifting the instant and formatting in
+ * UTC is the simplest way to get whole-hour-offset-correct wall-clock
+ * labels. When it's not present (e.g. a caller that doesn't have a
+ * `ResolvedLocation`), this falls back to the viewer's own browser
+ * timezone — for the common case (someone checking a forecast for their
+ * own roof) that usually *is* the panel's timezone anyway. Either way this
+ * is an approximation, not a real IANA lookup; revisit if `SimulationResult`
+ * ever carries the location's actual timezone.
  */
-const tickFormatter = new Intl.DateTimeFormat(undefined, {
-  weekday: 'short',
-  hour: 'numeric',
-})
-const tooltipFormatter = new Intl.DateTimeFormat(undefined, {
-  weekday: 'short',
-  month: 'short',
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-})
+function buildFormatters(utcOffsetHours: number | undefined) {
+  const hasFixedOffset = typeof utcOffsetHours === 'number'
+  const timeZone = hasFixedOffset ? 'UTC' : undefined
+  const shift = hasFixedOffset ? utcOffsetHours * 3_600_000 : 0
+
+  const tick = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    hour: 'numeric',
+    timeZone,
+  })
+  const tooltip = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone,
+  })
+
+  return {
+    formatTick: (epochMs: number) => tick.format(epochMs + shift),
+    formatTooltip: (epochMs: number) => tooltip.format(epochMs + shift),
+  }
+}
 
 /**
  * Forecast tab content: an hourly power line chart across the fetched
@@ -115,11 +130,22 @@ export function ForecastChart({ result }: ForecastChartProps) {
     () => buildChartData(result?.hourlyWattsSeries ?? []),
     [result],
   )
+  const { formatTick, formatTooltip } = useMemo(
+    () => buildFormatters(result?.location.utcOffsetHours),
+    [result],
+  )
 
   if (!result || data.length === 0) {
+    // Distinct from the shared `EmptyState` ("no location selected")
+    // deliberately: this component's actual empty condition is "no
+    // Live-mode simulation has been run yet for the current inputs" —
+    // reachable on every TMY -> Live mode switch even with a location
+    // already set (see PR #43 review finding #2). Matches the TMY charts'
+    // pattern of describing their own empty condition (e.g. `DailyChart`'s
+    // "No simulation data available for this location yet.").
     return (
-      <div className={styles.emptyWrapper}>
-        <EmptyState />
+      <div className={styles.empty}>
+        Click Update to fetch a forecast for this location.
       </div>
     )
   }
@@ -136,7 +162,7 @@ export function ForecastChart({ result }: ForecastChartProps) {
             dataKey="time"
             type="number"
             domain={['dataMin', 'dataMax']}
-            tickFormatter={(value: number) => tickFormatter.format(value)}
+            tickFormatter={(value: number) => formatTick(value)}
             stroke="var(--shell-muted)"
             tick={{ fill: 'var(--shell-muted)', fontSize: 12 }}
             minTickGap={40}
@@ -150,7 +176,7 @@ export function ForecastChart({ result }: ForecastChartProps) {
           />
           <Tooltip
             labelFormatter={(label) =>
-              typeof label === 'number' ? tooltipFormatter.format(label) : label
+              typeof label === 'number' ? formatTooltip(label) : label
             }
             formatter={(value) => [
               typeof value === 'number' ? `${Math.round(value)} W` : 'No data',

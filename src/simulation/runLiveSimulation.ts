@@ -18,7 +18,7 @@ import type { PanelSpec } from '../solar-physics'
 import type {
   HourlyPowerPoint,
   Location,
-  SimulationResult,
+  LiveSimulationResult,
   SystemConfig,
 } from './types'
 
@@ -165,7 +165,7 @@ function toPanelSpec(systemConfig: SystemConfig): PanelSpec {
 export async function runLiveSimulation(
   input: RunLiveSimulationInput,
   deps: RunLiveSimulationDeps = defaultDeps,
-): Promise<SimulationResult> {
+): Promise<LiveSimulationResult> {
   const { location, systemConfig } = input
   validateInput(location, systemConfig)
   const climate = await deps.fetchForecast(location.lat, location.lon)
