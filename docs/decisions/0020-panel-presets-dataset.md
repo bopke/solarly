@@ -31,9 +31,10 @@ Two things needed a concrete decision:
   grouping/labeling generic entries differently using the flag.
 - Fields: `id` (stable key for `<select>` values), `make`, `model`,
   `ratedWattsPeak`, `efficiencyPercent`, `tempCoefficientPercentPerC`,
-  `areaM2` (approximate module area, used only as an internal
-  cross-check against `ratedWattsPeak` and `efficiencyPercent` — see
-  below), `isGeneric`, and a free-text `notes` field for context (panel
+  `widthMm`/`heightMm` (nameplate module dimensions from the datasheet)
+  with `areaM2` derived from them, used as an internal cross-check
+  against `ratedWattsPeak` and `efficiencyPercent` — see below —
+  `isGeneric`, and a free-text `notes` field for context (panel
   technology, typical use case) that's useful for a human picking a
   preset but not load-bearing for the physics pipeline.
 - Generic entries use `make: 'Generic'` and are also flagged via
@@ -59,9 +60,13 @@ Two things needed a concrete decision:
 - Adding, removing, or re-numbering presets later is a small, isolated
   diff to one file. The test suite enforces plausible per-field value
   ranges and, via a cross-check between `ratedWattsPeak`,
-  `efficiencyPercent`, and `areaM2`, catches a real-but-implausible
-  model/spec combination (e.g. a wattage that doesn't match the named
-  module's actual area) — not just an out-of-range decimal slip.
+  `efficiencyPercent`, and `areaM2` (itself derived from the datasheet's
+  own `widthMm`/`heightMm`, not stored independently), catches a
+  wattage/efficiency pair that's inconsistent with the panel's real
+  physical dimensions — not just an out-of-range decimal slip. Because
+  `widthMm`/`heightMm` are externally verifiable against the datasheet
+  PDF, this check can't be satisfied by adjusting `areaM2` to agree with
+  a wrong (Wp, efficiency) pair.
 - Because this is a point-in-time snapshot of published specs rather
   than a live-synced catalog, someone will eventually need to refresh
   the real-model numbers (new module generations supersede these); this

@@ -17,6 +17,10 @@ describe('PANEL_PRESETS', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
+  it.each(PANEL_PRESETS)('$id has a kebab-case id', (preset) => {
+    expect(preset.id).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+  })
+
   it.each(PANEL_PRESETS)(
     '$id has plausible efficiency, temp coefficient, and wattage',
     (preset) => {
@@ -45,17 +49,43 @@ describe('PANEL_PRESETS', () => {
   )
 
   it.each(PANEL_PRESETS)(
+    '$id has plausible module dimensions and a correctly derived areaM2',
+    (preset) => {
+      // Plausible single-module footprint: small residential half-cut
+      // modules start around ~1.5 m^2, large-format commercial/utility
+      // modules top out around ~3.2 m^2.
+      expect(preset.areaM2).toBeGreaterThanOrEqual(1.5)
+      expect(preset.areaM2).toBeLessThanOrEqual(3.2)
+
+      // areaM2 must actually be derived from widthMm x heightMm, not an
+      // independently editable number - otherwise it can't anchor the
+      // wattage/efficiency cross-check below to physical reality.
+      const expectedAreaM2 = (preset.widthMm * preset.heightMm) / 1_000_000
+      expect(preset.areaM2).toBeCloseTo(expectedAreaM2, 3)
+    },
+  )
+
+  it.each(PANEL_PRESETS)(
     '$id rated wattage is consistent with efficiency x area (catches model/spec mismatches)',
     (preset) => {
       // ratedWattsPeak should equal roughly efficiencyPercent/100 * areaM2 *
-      // 1000. This is the cross-check that catches a real model code paired
-      // with a wattage/efficiency combination that doesn't match its actual
-      // physical size (e.g. a wattage that belongs to a different SKU).
-      // Real STC ratings carry measurement tolerance, so allow ~5%.
+      // 1000, where areaM2 is derived from the datasheet's own
+      // widthMm/heightMm (see above) rather than stored independently. That
+      // anchor is what makes this catch a real model code paired with a
+      // wattage/efficiency combination that doesn't match its actual
+      // physical size (e.g. a wattage that belongs to a different SKU) -
+      // an independently-editable areaM2 could always be nudged to agree
+      // with a wrong (Wp, efficiency) pair.
+      //
+      // Datasheet efficiency is computed FROM nameplate Wp and module
+      // area, so the two agree by construction to within display rounding
+      // (~0.2-0.3%); every genuinely-correct entry in this dataset lands
+      // within ~0.4%. +-2% is tight enough to catch a real mismatch while
+      // leaving headroom for rounding.
       const impliedWatts =
         (preset.efficiencyPercent / 100) * preset.areaM2 * 1000
-      expect(preset.ratedWattsPeak).toBeGreaterThanOrEqual(impliedWatts * 0.95)
-      expect(preset.ratedWattsPeak).toBeLessThanOrEqual(impliedWatts * 1.05)
+      expect(preset.ratedWattsPeak).toBeGreaterThanOrEqual(impliedWatts * 0.98)
+      expect(preset.ratedWattsPeak).toBeLessThanOrEqual(impliedWatts * 1.02)
     },
   )
 

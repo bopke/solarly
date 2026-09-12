@@ -9,13 +9,14 @@ reconstruct the reasoning from git history.
 
 - File name: `docs/decisions/NNNN-title.md`, where `NNNN` is a four-digit,
   zero-padded number and `title` is a short kebab-case summary. Numbers
-  must be unique but do **not** need to be contiguous: during parallel
-  development, separate workstreams may reserve number blocks (e.g. the
-  0010s, 0020s, 0030s, ...) so that ADRs written concurrently on
-  different branches don't collide when merged. Gaps between numbers are
-  expected and fine — pick any unused number in your workstream's block
-  when writing a new ADR, and don't renumber existing ADRs on merge just
-  to remove gaps.
+  must be unique but do **not** need to be contiguous. Before picking a
+  number, check `docs/decisions/` for the existing ADRs (including on
+  other in-progress branches, if you can see them) and pick any number
+  not already in use. Gaps between numbers are expected and fine — don't
+  renumber existing ADRs on merge just to remove them. There's no formal
+  registry of which number ranges belong to which workstream; picking an
+  unused number is sufficient to avoid collisions. (`0001-project-scaffolding.md`
+  predates this convention and doesn't itself reserve a block.)
 - Each file uses this structure:
 
   ```markdown
