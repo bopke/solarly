@@ -15,6 +15,8 @@ export { ErrorState } from './ErrorState'
 export type { ErrorStateProps } from './ErrorState'
 export { LoadingSkeleton } from './LoadingSkeleton'
 export type { LoadingSkeletonProps } from './LoadingSkeleton'
+export { Heatmap } from './Heatmap'
+export type { HeatmapProps } from './Heatmap'
 export {
   TABS_BY_MODE,
   TAB_LABELS,

@@ -1,0 +1,63 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.cell {
+  stroke: var(--shell-surface);
+  stroke-width: 0.5;
+}
+
+.axisLabel {
+  fill: var(--shell-muted);
+  font-size: 8px;
+  font-family: inherit;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legendLabel {
+  color: var(--shell-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.legendSwatch {
+  border-radius: 2px;
+  border: 1px solid var(--shell-border);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--shell-muted);
+}
+
+.emptyTitle {
+  color: var(--shell-text);
+  font-weight: 600;
+  margin: 0;
+}
+
+.emptyHint {
+  margin: 0;
+  font-size: 14px;
+}
