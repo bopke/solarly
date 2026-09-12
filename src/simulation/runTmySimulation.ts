@@ -52,7 +52,7 @@ const REPRESENTATIVE_DAY_OF_MONTH = 15
  * for that. See ADR 0040.
  */
 const MIN_CLEARNESS_FACTOR = 0
-const MAX_CLEARNESS_FACTOR = 1.2
+export const MAX_CLEARNESS_FACTOR = 1.2
 
 const HOURS_PER_DAY = 24
 
@@ -89,16 +89,27 @@ function dayOfYear(year: number, month: number, day: number): number {
 }
 
 /**
- * Computes clear-sky horizontal GHI (direct + diffuse) for every hour of
- * the representative day, plus the day's total clear-sky insolation.
+ * Milliseconds per hour of longitude-based local solar time offset from
+ * UTC (15° of longitude ≈ 1 hour) — see `computeClearSkyHourly`.
+ */
+const MS_PER_LOCAL_SOLAR_HOUR = 3_600_000
+
+/**
+ * Computes clear-sky horizontal GHI (direct + diffuse) for every *local
+ * solar* hour of the representative day, plus the day's total clear-sky
+ * insolation.
  *
- * Hours are stepped as UTC hours of the representative calendar date
- * (rather than resolving the location's local solar day, which would
- * require a timezone lookup this project doesn't otherwise perform — see
- * ADR 0040). This is a good approximation away from extreme longitudes;
- * it can shift the apparent sunrise/sunset hour by up to ~12h of UTC
- * clock time relative to local solar time without affecting total daily
- * insolation, since the full 24-hour cycle is still covered.
+ * Hours are stepped in the location's local solar time — approximated as
+ * a simple longitude offset from UTC (`-longitude/15` hours, no timezone
+ * database or DST lookup needed, the same simple approach used elsewhere
+ * in this project) — rather than raw UTC hours. Stepping in UTC would
+ * still produce the correct daily *total* (a fixed offset just relabels
+ * which 24 samples cover the day), but it wraps and mis-centers the
+ * hourly *shape*: for a location far from UTC (e.g. Tokyo, UTC+9), "hour
+ * 12" in UTC is nowhere near local solar noon, so the synthesized curve
+ * would show generation clustered at the wrong hours and, near the
+ * international date line, could split into two disjoint lobes. See ADR
+ * 0040.
  */
 function computeClearSkyHourly(
   location: Location,
@@ -112,8 +123,11 @@ function computeClearSkyHourly(
     sunAlt: number
     sunAz: number
   }[] = []
+  const localSolarOffsetMs = -(location.lon / 15) * MS_PER_LOCAL_SOLAR_HOUR
   for (let hour = 0; hour < HOURS_PER_DAY; hour++) {
-    const timestamp = new Date(Date.UTC(year, month - 1, day, hour))
+    const timestamp = new Date(
+      Date.UTC(year, month - 1, day, hour) + localSolarOffsetMs,
+    )
     const sun = sunPosition(location.lat, location.lon, timestamp)
     const clearSky = clearSkyIrradiance(sun.altitude)
     hourly.push({
@@ -124,6 +138,98 @@ function computeClearSkyHourly(
     })
   }
   return hourly
+}
+
+type ClearSkyHourly = {
+  hour: number
+  ghiWm2: number
+  sunAlt: number
+  sunAz: number
+}[]
+
+/**
+ * Result of scanning every day of a month's clear-sky insolation once:
+ * the month-averaged daily clear-sky insolation (the clearness-factor
+ * denominator, see below) plus the hourly curve to use for the
+ * representative day's *shape*.
+ */
+interface MonthClearSkyStats {
+  /** Average of each sampled day's clear-sky daily insolation across the month. */
+  averageDailyInsolationKWhM2: number
+  /** Day-of-month whose hourly curve is used for the representative day's shape. */
+  shapeDay: number
+  /** That day's hourly clear-sky curve. */
+  shapeHourly: ClearSkyHourly
+}
+
+/**
+ * Scans every day of the month once, computing:
+ *
+ * 1. The month's **average** clear-sky daily insolation (sampling clear-sky
+ *    insolation across every day spanning the month rather than relying on
+ *    a single representative day, and averaging the results) — used as the
+ *    clearness-factor denominator. See ADR 0040's "month-averaged
+ *    clear-sky denominator" section for why a single day (e.g. day 15) is
+ *    a poor denominator: day-to-day clear-sky variation (and, at high
+ *    latitude, sharp convexity near polar night) can make a single day's
+ *    estimate diverge substantially from the month's true average, which
+ *    is what a monthly climate normal actually measures against.
+ * 2. Which day's hourly clear-sky curve to use for the representative
+ *    day's *shape* (diurnal sunrise/sunset/peak pattern). Ordinarily this
+ *    is `preferredDay` (day 15) — a fine astronomical stand-in for "what a
+ *    clear day looks like this month". But at high latitude, day 15 itself
+ *    can be a polar-night day with zero clear-sky insolation even though
+ *    the month as a whole has some daylight at its edges (see ADR 0040 /
+ *    the PR review's Issue 3) — using day 15's all-zero curve as the shape
+ *    would silently zero the whole month's real, non-zero climate-normal
+ *    insolation. In that degenerate case, fall back to the month's
+ *    best-daylight day instead, so a month with any real daylight at all
+ *    produces a non-zero (if small) output.
+ */
+function computeMonthClearSkyStats(
+  location: Location,
+  year: number,
+  month: number,
+  totalDaysInMonth: number,
+  preferredDay: number,
+): MonthClearSkyStats {
+  let sum = 0
+  let count = 0
+  let bestDay = preferredDay
+  let bestDayTotalKWhM2 = -Infinity
+  let bestDayHourly: ClearSkyHourly = []
+  let preferredHourly: ClearSkyHourly = []
+  let preferredTotalKWhM2 = 0
+
+  for (let day = 1; day <= totalDaysInMonth; day++) {
+    const hourly = computeClearSkyHourly(location, year, month, day)
+    const dailyKWhM2 = hourly.reduce((s, h) => s + h.ghiWm2, 0) / 1000
+    sum += dailyKWhM2
+    count++
+
+    if (day === preferredDay) {
+      preferredHourly = hourly
+      preferredTotalKWhM2 = dailyKWhM2
+    }
+    if (dailyKWhM2 > bestDayTotalKWhM2) {
+      bestDayTotalKWhM2 = dailyKWhM2
+      bestDay = day
+      bestDayHourly = hourly
+    }
+  }
+
+  const averageDailyInsolationKWhM2 = count > 0 ? sum / count : 0
+
+  // Use day 15's own shape unless it's degenerate (zero clear-sky
+  // insolation) while the month as a whole has real daylight elsewhere.
+  const dayFifteenIsDegenerate =
+    preferredTotalKWhM2 <= 0 && averageDailyInsolationKWhM2 > 0
+
+  return {
+    averageDailyInsolationKWhM2,
+    shapeDay: dayFifteenIsDegenerate ? bestDay : preferredDay,
+    shapeHourly: dayFifteenIsDegenerate ? bestDayHourly : preferredHourly,
+  }
 }
 
 /**
@@ -139,34 +245,42 @@ function simulateMonth(
   referenceYear: number,
 ): MonthlySimulation {
   const day = REPRESENTATIVE_DAY_OF_MONTH
-  const clearSkyHourly = computeClearSkyHourly(
-    location,
-    referenceYear,
-    normal.month,
-    day,
-  )
+  const monthDaysInMonth = daysInMonth(referenceYear, normal.month)
 
-  // Integrate hourly W/m^2 samples as if each represents that hour's
-  // average irradiance, so summing 24 of them yields Wh/m^2/day.
-  const clearSkyDailyInsolationWhM2 = clearSkyHourly.reduce(
-    (sum, h) => sum + h.ghiWm2,
-    0,
-  )
-  const clearSkyDailyInsolationKWhM2 = clearSkyDailyInsolationWhM2 / 1000
+  // A single scan of every day in the month: the month-averaged clear-sky
+  // daily insolation (the clearness-factor denominator) plus the hourly
+  // curve to use for the representative day's shape (ordinarily day 15,
+  // unless day 15 is itself a degenerate polar-night day — see
+  // `computeMonthClearSkyStats` and ADR 0040).
+  const { averageDailyInsolationKWhM2, shapeHourly: clearSkyHourly } =
+    computeMonthClearSkyStats(
+      location,
+      referenceYear,
+      normal.month,
+      monthDaysInMonth,
+      day,
+    )
+  const clearSkyDailyInsolationKWhM2 = averageDailyInsolationKWhM2
 
   // Guard against a division by (near-)zero clear-sky estimate — possible
-  // in principle for a polar-night representative day where the sun never
-  // rises. In that case there's no clear-sky reference to scale against,
-  // so the clearness factor is meaningless; fall back to 0 (no output),
-  // which is also physically correct for a day with no daylight hours.
+  // in principle for a month whose every day is polar night (the sun
+  // never rises at all, all month). In that case there's no clear-sky
+  // reference to scale against, so the clearness factor is meaningless;
+  // fall back to 0 (no output), which is also physically correct for a
+  // month with no daylight hours at all. `Number.isFinite` additionally
+  // guards against a NaN/Infinity artifact (e.g. a non-zero climate
+  // normal divided by a zero or otherwise degenerate denominator) leaking
+  // into the result instead of a clean 0.
   const clearnessFactorRaw =
     clearSkyDailyInsolationKWhM2 > 0
       ? normal.dailyInsolationKWhM2 / clearSkyDailyInsolationKWhM2
       : 0
-  const clearnessFactor = Math.min(
-    Math.max(clearnessFactorRaw, MIN_CLEARNESS_FACTOR),
-    MAX_CLEARNESS_FACTOR,
-  )
+  const clearnessFactor = Number.isFinite(clearnessFactorRaw)
+    ? Math.min(
+        Math.max(clearnessFactorRaw, MIN_CLEARNESS_FACTOR),
+        MAX_CLEARNESS_FACTOR,
+      )
+    : 0
 
   const ratedWattsPeak = systemConfig.panelCount * systemConfig.wattsPerPanel
   const panelSpec = {
@@ -202,8 +316,6 @@ function simulateMonth(
   // integration above: summing 24 hourly watt values yields Wh for the day.
   const representativeDayTotalKWh =
     representativeDayHourly.reduce((sum, p) => sum + p.powerW, 0) / 1000
-
-  const monthDaysInMonth = daysInMonth(referenceYear, normal.month)
 
   return {
     month: normal.month,
