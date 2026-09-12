@@ -1,0 +1,25 @@
+/*
+ * `--shell-*` design tokens live on `:root` in `tokens.css` (ADR 0060 /
+ * finding #4), not here — a module-scoped class only exposes custom
+ * properties to its own DOM descendants, which breaks for anything
+ * portaled outside `AppShell` (map popups, dropdowns, modals).
+ */
+.shell {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh; /* fallback for browsers without dvh support */
+  height: 100dvh;
+  background: var(--shell-bg);
+  color: var(--shell-text);
+}
+
+/* Narrow/desktop breakpoint: 768px (see `SIDEBAR_BREAKPOINT_PX` in types.ts). */
+@media (max-width: 768px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: auto;
+    min-height: 100vh; /* fallback for browsers without dvh support */
+    min-height: 100dvh;
+  }
+}
