@@ -1,16 +1,16 @@
-# Cloudflare Pages deploy config for Solarly.
+# Cloudflare Workers deploy config for Solarly.
 #
-# This project is a static Vite build with no server-side code, so the
-# Pages project only needs a build output directory — no Workers runtime
-# bindings or functions are configured here.
+# This project is a static Vite build with no server-side code, so it's
+# deployed as a Worker serving static assets only — no `main` entrypoint
+# script and no Workers runtime bindings are needed.
 #
-# NOTE: this config has not been used to trigger an actual deploy (no
-# Cloudflare account/credentials are available in this environment). It
-# describes the settings a Cloudflare Pages project should use; someone
-# with Cloudflare access still needs to create the Pages project (via the
-# dashboard, or `wrangler pages project create solarly`) and connect it to
-# this repo, or run `wrangler pages deploy dist` after building locally.
+# Deployment is handled by Cloudflare's own Git-integrated "Workers Builds"
+# (connected via the dashboard), which runs the configured build command
+# and then `wrangler deploy` using this file on every push — no GitHub
+# Actions secrets or workflow required.
 
 name = "solarly"
-pages_build_output_dir = "dist"
 compatibility_date = "2026-09-12"
+
+[assets]
+directory = "dist"
