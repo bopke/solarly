@@ -4,5 +4,7 @@ dist/
 .DS_Store
 .wrangler/
 .env
+.env.local
+.env.*.local
 *.local
 coverage/

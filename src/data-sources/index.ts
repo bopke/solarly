@@ -7,3 +7,5 @@ export {
   NasaPowerNoDataError,
   NasaPowerRequestError,
 } from './nasa-power/errors.ts'
+export { geocode } from './nominatim'
+export type { GeocodeResult } from './nominatim'

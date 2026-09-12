@@ -25,6 +25,10 @@ for details and what's needed to complete it.
 
 Requires Node.js >=22.12 (see `.nvmrc`; `vitest@5` requires it). Run `nvm use` if you use nvm.
 
+Copy `.env.example` to `.env` if you want to override any defaults (see
+that file for details — currently just `VITE_NOMINATIM_CONTACT_EMAIL`,
+which already has a sensible built-in default so this step is optional).
+
 ```bash
 npm install       # install dependencies
 npm run dev       # start the Vite dev server with HMR
