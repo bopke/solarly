@@ -1,0 +1,245 @@
+import { describe, expect, it } from 'vitest'
+import type { MonthlyClimateNormal } from '../data-sources/index.ts'
+import { buildTmySimulationResult, REFERENCE_YEAR } from './runTmySimulation.ts'
+import type { SystemConfig } from './types.ts'
+
+/**
+ * Fixture climate normals loosely modeled on NASA POWER climatology for a
+ * sunny mid-latitude location (Phoenix, AZ-ish: high insolation,
+ * pronounced seasonal swing, hot summers). Values are representative
+ * rather than pulled verbatim from a live API response — this module's
+ * tests are integration tests of the physics pipeline wiring, not of
+ * NASA POWER's response format (that's `data-sources`'s job).
+ */
+const SUNNY_LOCATION_NORMALS: MonthlyClimateNormal[] = [
+  { month: 1, temperatureC: 11.5, dailyInsolationKWhM2: 3.9 },
+  { month: 2, temperatureC: 13.8, dailyInsolationKWhM2: 4.9 },
+  { month: 3, temperatureC: 17.2, dailyInsolationKWhM2: 6.1 },
+  { month: 4, temperatureC: 21.5, dailyInsolationKWhM2: 7.3 },
+  { month: 5, temperatureC: 26.6, dailyInsolationKWhM2: 8.0 },
+  { month: 6, temperatureC: 32.0, dailyInsolationKWhM2: 8.4 },
+  { month: 7, temperatureC: 35.0, dailyInsolationKWhM2: 7.6 },
+  { month: 8, temperatureC: 34.2, dailyInsolationKWhM2: 7.1 },
+  { month: 9, temperatureC: 30.5, dailyInsolationKWhM2: 6.6 },
+  { month: 10, temperatureC: 23.8, dailyInsolationKWhM2: 5.4 },
+  { month: 11, temperatureC: 16.2, dailyInsolationKWhM2: 4.1 },
+  { month: 12, temperatureC: 11.0, dailyInsolationKWhM2: 3.5 },
+]
+
+const SUNNY_LOCATION = { lat: 33.45, lon: -112.07 } // Phoenix, AZ
+
+/** A modest residential system: ~20 panels x 400W ~= 8kW. */
+const RESIDENTIAL_SYSTEM: SystemConfig = {
+  tiltDeg: 20,
+  azimuthDeg: 180,
+  panelCount: 20,
+  wattsPerPanel: 400,
+  efficiencyPercent: 21,
+  tempCoefficientPercentPerC: -0.34,
+  systemLossesPercent: 14,
+  manualShadingPercent: 0,
+}
+
+describe('buildTmySimulationResult', () => {
+  it('produces one MonthlySimulation per input climate normal, sorted ascending by month', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    expect(result.months).toHaveLength(12)
+    expect(result.months.map((m) => m.month)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ])
+    expect(result.referenceYear).toBe(REFERENCE_YEAR)
+    expect(result.location).toEqual(SUNNY_LOCATION)
+    expect(result.systemConfig).toEqual(RESIDENTIAL_SYSTEM)
+  })
+
+  it('handles a partial (non-12-month) input by only producing entries for available months', () => {
+    const partialNormals = SUNNY_LOCATION_NORMALS.filter((n) =>
+      [6, 7, 12].includes(n.month),
+    )
+
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      partialNormals,
+    )
+
+    expect(result.months.map((m) => m.month)).toEqual([6, 7, 12])
+  })
+
+  it('each representative day has a 24-hour curve with zero power at night and positive power at midday', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    const june = result.months.find((m) => m.month === 6)!
+    expect(june.representativeDayHourly).toHaveLength(24)
+    expect(june.representativeDayHourly.map((h) => h.hour)).toEqual(
+      Array.from({ length: 24 }, (_, i) => i),
+    )
+
+    // Phoenix is UTC-7; local midnight-ish hours should have no sun.
+    const midnightUtc = june.representativeDayHourly.find((h) => h.hour === 7)!
+    expect(midnightUtc.powerW).toBe(0)
+    expect(midnightUtc.poaIrradianceWm2).toBe(0)
+
+    // Local early afternoon (~UTC 20:00 = 13:00 local) should be producing
+    // substantial power for an 8kW-rated array in a sunny location.
+    const middayUtc = june.representativeDayHourly.find((h) => h.hour === 20)!
+    expect(middayUtc.powerW).toBeGreaterThan(1000)
+  })
+
+  it('clamps the clearness factor into [0, 1.2]', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    for (const month of result.months) {
+      expect(month.clearnessFactor).toBeGreaterThanOrEqual(0)
+      expect(month.clearnessFactor).toBeLessThanOrEqual(1.2)
+    }
+  })
+
+  it('every month is mostly clear (clearness factor near the upper end) for this sunny fixture', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    for (const month of result.months) {
+      // Phoenix's real-world insolation is close to (usually slightly
+      // below) simple clear-sky estimates for most of the year.
+      expect(month.clearnessFactor).toBeGreaterThan(0.5)
+    }
+  })
+
+  it('computes monthlyTotalKWh as representativeDayTotalKWh * daysInMonth, and February has 28 days in the reference year', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    const feb = result.months.find((m) => m.month === 2)!
+    expect(feb.daysInMonth).toBe(28)
+    expect(feb.monthlyTotalKWh).toBeCloseTo(
+      feb.representativeDayTotalKWh * 28,
+      6,
+    )
+
+    const july = result.months.find((m) => m.month === 7)!
+    expect(july.daysInMonth).toBe(31)
+  })
+
+  it('annualTotalKWh equals the sum of all monthlyTotalKWh entries', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    const expectedAnnual = result.months.reduce(
+      (sum, m) => sum + m.monthlyTotalKWh,
+      0,
+    )
+    expect(result.annualTotalKWh).toBeCloseTo(expectedAnnual, 6)
+  })
+
+  it('produces a plausible annual kWh figure for an ~8kW residential system in a sunny location', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    // Real-world reference: a well-sited ~8kW residential system in a
+    // sunny US location like Phoenix typically produces somewhere around
+    // 12,000-16,000 kWh/year (roughly 1,500-2,000 kWh per installed kW,
+    // a commonly cited PVWatts-style capacity-factor range for
+    // high-insolation sites). Assert a generous but meaningful band
+    // around that so a badly broken pipeline (e.g. an order-of-magnitude
+    // unit error) fails the test.
+    expect(result.annualTotalKWh).toBeGreaterThan(8000)
+    expect(result.annualTotalKWh).toBeLessThan(20000)
+  })
+
+  it('applies manual shading as an additional derate on top of system losses', () => {
+    const shadedSystem: SystemConfig = {
+      ...RESIDENTIAL_SYSTEM,
+      manualShadingPercent: 50,
+    }
+
+    const unshaded = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+    const shaded = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      shadedSystem,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    // Retention factors stack multiplicatively: (1 - losses) * (1 - shading).
+    // With systemLossesPercent = 14 and manualShadingPercent = 50, the
+    // shaded system should retain (1 - 0.14) * (1 - 0.50) = 0.43 of the
+    // unshaded (1 - 0.14) = 0.86 retention, i.e. exactly half.
+    expect(shaded.annualTotalKWh).toBeCloseTo(unshaded.annualTotalKWh * 0.5, 4)
+  })
+
+  it('a bigger array (more panels) produces proportionally more energy', () => {
+    const biggerSystem: SystemConfig = {
+      ...RESIDENTIAL_SYSTEM,
+      panelCount: RESIDENTIAL_SYSTEM.panelCount * 2,
+    }
+
+    const base = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+    const bigger = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      biggerSystem,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    expect(bigger.annualTotalKWh).toBeCloseTo(base.annualTotalKWh * 2, 4)
+  })
+
+  it('assigns each representative day a sensible day-of-year value that increases month over month', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    const dayOfYears = result.months.map((m) => m.dayOfYear)
+    for (let i = 1; i < dayOfYears.length; i++) {
+      expect(dayOfYears[i]).toBeGreaterThan(dayOfYears[i - 1])
+    }
+    // Jan 15 is the 15th day of the year.
+    expect(result.months[0].dayOfYear).toBe(15)
+  })
+
+  it('summer months produce more energy than winter months at this northern-hemisphere sunny location', () => {
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    const june = result.months.find((m) => m.month === 6)!
+    const december = result.months.find((m) => m.month === 12)!
+    expect(june.monthlyTotalKWh).toBeGreaterThan(december.monthlyTotalKWh)
+  })
+})
