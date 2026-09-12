@@ -1,26 +1,37 @@
 import { describe, expect, it, vi } from 'vitest'
 import fixture from './__fixtures__/open-meteo-forecast.json'
-import { attenuateForCloudCover, fetchOpenMeteoForecast } from './open-meteo'
+import { fetchOpenMeteoForecast } from './open-meteo'
 
-function fixtureFetch(body: unknown): typeof fetch {
+function fixtureFetch(
+  body: unknown,
+  init: Partial<Response> = {},
+): typeof fetch {
   return vi.fn(async () =>
     Promise.resolve({
       ok: true,
       status: 200,
       statusText: 'OK',
       json: async () => body,
+      ...init,
     }),
   ) as unknown as typeof fetch
 }
 
 describe('fetchOpenMeteoForecast', () => {
-  it('normalizes the recorded fixture response into HourlyClimate[]', async () => {
+  it('normalizes the recorded fixture response into HourlyClimate[], dropping null-padded hours', async () => {
     const fetchImpl = fixtureFetch(fixture)
 
     const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
 
-    expect(result).toHaveLength(fixture.hourly.time.length)
-    // Every entry has the shared shape with the right primitive types.
+    // The fixture has 24 hours, one of which (23:00) has a null
+    // shortwave_radiation value and should be dropped.
+    const expectedLength = fixture.hourly.time.length - 1
+    expect(result).toHaveLength(expectedLength)
+    expect(
+      result.some((entry) => entry.timestamp === '2026-06-21T23:00:00Z'),
+    ).toBe(false)
+    // Every remaining entry has the shared shape with the right primitive
+    // types (no `null` leaking through a `number`-typed field).
     for (const entry of result) {
       expect(typeof entry.timestamp).toBe('string')
       expect(typeof entry.temperatureC).toBe('number')
@@ -35,51 +46,51 @@ describe('fetchOpenMeteoForecast', () => {
     const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
 
     expect(result[0].timestamp).toBe('2026-06-21T00:00:00Z')
-    expect(result[4].timestamp).toBe('2026-06-21T12:00:00Z')
+    expect(result[12].timestamp).toBe('2026-06-21T12:00:00Z')
   })
 
-  it('carries temperature through unchanged', async () => {
+  it('uses shortwave_radiation directly as GHI, with a pinned golden value', async () => {
+    const fetchImpl = fixtureFetch(fixture)
+
+    const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
+
+    const noon = result.find((r) => r.timestamp === '2026-06-21T12:00:00Z')
+    expect(noon?.ghiWm2).toBe(881.19)
+  })
+
+  it('carries temperature through unchanged for non-null hours', async () => {
     const fetchImpl = fixtureFetch(fixture)
 
     const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
 
     expect(result.map((r) => r.temperatureC)).toEqual(
-      fixture.hourly.temperature_2m,
+      fixture.hourly.temperature_2m.slice(0, -1),
     )
   })
 
-  it('estimates zero GHI at night regardless of cloud cover', async () => {
+  it('is zero (not negative or missing) GHI at night', async () => {
     const fetchImpl = fixtureFetch(fixture)
 
     const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
 
-    // 00:00 and 21:00 UTC are well after sunset / before sunrise in Berlin
-    // in June.
     expect(result[0].ghiWm2).toBe(0)
-    expect(result[7].ghiWm2).toBe(0)
+    expect(result[1].ghiWm2).toBe(0)
   })
 
-  it('produces higher GHI for a clearer midday hour than a cloudier one', async () => {
+  it('produces higher GHI at noon than mid-afternoon', async () => {
     const fetchImpl = fixtureFetch(fixture)
 
     const result = await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
 
-    // 12:00 (0% cloud cover) vs 15:00 (20% cloud cover), both daytime.
-    const noon = result[4]
-    const afternoon = result[5]
-    expect(noon.ghiWm2).toBeGreaterThan(afternoon.ghiWm2)
-    // Midday clear-sky GHI in June at 52.5N should be in a plausible range.
-    expect(noon.ghiWm2).toBeGreaterThan(700)
-    expect(noon.ghiWm2).toBeLessThan(1100)
+    const noon = result.find((r) => r.timestamp === '2026-06-21T12:00:00Z')
+    const afternoon = result.find((r) => r.timestamp === '2026-06-21T15:00:00Z')
+    expect(noon?.ghiWm2).toBeGreaterThan(afternoon?.ghiWm2 ?? Infinity)
   })
 
-  it('requests the expected hourly variables and clamps forecast_days', async () => {
+  it('requests the expected hourly variables', async () => {
     const fetchImpl = fixtureFetch(fixture)
 
-    await fetchOpenMeteoForecast(52.52, 13.41, {
-      fetchImpl,
-      forecastDays: 30,
-    })
+    await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl })
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const calledUrl = new URL(
@@ -89,52 +100,109 @@ describe('fetchOpenMeteoForecast', () => {
       'https://api.open-meteo.com/v1/forecast',
     )
     expect(calledUrl.searchParams.get('hourly')).toBe(
-      'temperature_2m,cloud_cover',
+      'temperature_2m,shortwave_radiation',
     )
     expect(calledUrl.searchParams.get('latitude')).toBe('52.52')
     expect(calledUrl.searchParams.get('longitude')).toBe('13.41')
     expect(calledUrl.searchParams.get('timezone')).toBe('UTC')
-    // Clamped to Open-Meteo's documented max of 16.
+    expect(calledUrl.searchParams.get('forecast_days')).toBe('7')
+  })
+
+  it('clamps forecast_days to the documented [1, 16] range', async () => {
+    const fetchImpl = fixtureFetch(fixture)
+
+    await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl, forecastDays: 30 })
+
+    const calledUrl = new URL(
+      (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0][0] as string,
+    )
     expect(calledUrl.searchParams.get('forecast_days')).toBe('16')
   })
 
-  it('throws when the response is not ok', async () => {
+  it('clamps forecast_days below 1 up to the minimum', async () => {
+    const fetchImpl = fixtureFetch(fixture)
+
+    await fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl, forecastDays: 0 })
+
+    const calledUrl = new URL(
+      (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0][0] as string,
+    )
+    expect(calledUrl.searchParams.get('forecast_days')).toBe('1')
+  })
+
+  it('rejects a fractional forecastDays', async () => {
+    const fetchImpl = fixtureFetch(fixture)
+
+    await expect(
+      fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl, forecastDays: 3.7 }),
+    ).rejects.toThrow(/finite integer/)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('rejects a NaN forecastDays', async () => {
+    const fetchImpl = fixtureFetch(fixture)
+
+    await expect(
+      fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl, forecastDays: NaN }),
+    ).rejects.toThrow(/finite integer/)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('throws a clear error when the response is missing the hourly field', async () => {
+    const fetchImpl = fixtureFetch({ latitude: 52.52, longitude: 13.41 })
+
+    await expect(
+      fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl }),
+    ).rejects.toThrow(/missing the 'hourly' field/)
+  })
+
+  it('throws a clear error when hourly arrays have mismatched lengths', async () => {
+    const malformed = {
+      ...fixture,
+      hourly: {
+        ...fixture.hourly,
+        temperature_2m: fixture.hourly.temperature_2m.slice(0, 3),
+      },
+    }
+    const fetchImpl = fixtureFetch(malformed)
+
+    await expect(
+      fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl }),
+    ).rejects.toThrow(/mismatched lengths/)
+  })
+
+  it('surfaces the reason from an Open-Meteo error response body', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        statusText: '',
+        json: async () => ({
+          error: true,
+          reason: 'Latitude must be in range of -90 to 90',
+        }),
+      }),
+    ) as unknown as typeof fetch
+
+    await expect(
+      fetchOpenMeteoForecast(200, 13.41, { fetchImpl }),
+    ).rejects.toThrow(/Latitude must be in range of -90 to 90/)
+  })
+
+  it('still throws a useful error when the error body is not JSON', async () => {
     const fetchImpl = vi.fn(async () =>
       Promise.resolve({
         ok: false,
         status: 429,
         statusText: 'Too Many Requests',
-        json: async () => ({}),
+        json: async () => {
+          throw new Error('not json')
+        },
       }),
     ) as unknown as typeof fetch
 
     await expect(
       fetchOpenMeteoForecast(52.52, 13.41, { fetchImpl }),
     ).rejects.toThrow(/429/)
-  })
-})
-
-describe('attenuateForCloudCover', () => {
-  it('returns the clear-sky value unchanged at 0% cloud cover', () => {
-    expect(attenuateForCloudCover(800, 0)).toBe(800)
-  })
-
-  it('attenuates fully overcast sky per the Kasten & Czeplak curve', () => {
-    // At 100% cloud cover the fraction is 1, so attenuation = 1 - 0.75 = 0.25.
-    expect(attenuateForCloudCover(800, 100)).toBeCloseTo(800 * 0.25, 5)
-  })
-
-  it('is monotonically non-increasing as cloud cover increases', () => {
-    const values = [0, 25, 50, 75, 100].map((cc) =>
-      attenuateForCloudCover(1000, cc),
-    )
-    for (let i = 1; i < values.length; i++) {
-      expect(values[i]).toBeLessThanOrEqual(values[i - 1])
-    }
-  })
-
-  it('clamps out-of-range cloud cover input', () => {
-    expect(attenuateForCloudCover(800, -10)).toBe(800)
-    expect(attenuateForCloudCover(800, 150)).toBeCloseTo(800 * 0.25, 5)
   })
 })

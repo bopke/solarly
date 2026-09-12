@@ -1,85 +1,89 @@
-# 0040. Open-Meteo client: endpoint, cloud-cover attenuation, and clear-sky estimate
+# 0040. Open-Meteo client: endpoint and direct-GHI fetch
 
 Status: accepted
 
 ## Context
 
-Issue #7 asks for a `data-sources/` client that fetches an hourly
-cloud-cover and temperature forecast from Open-Meteo for a given lat/lon,
-and normalizes it into the shared `HourlyClimate` shape (`{ timestamp,
-temperatureC, ghiWm2 }`) described in
-`docs/superpowers/specs/2026-09-12-solarly-m1-design.md`. Open-Meteo's free
-forecast API does not publish irradiance for this use case, so `ghiWm2`
-must be _estimated_ from cloud cover rather than read directly (unlike the
-NASA POWER client, which uses POWER's own all-sky GHI as-is). This required
-several decisions that aren't fully specified by the issue or the design
-doc.
+Issue #7 asks for a `data-sources/` client that fetches an hourly forecast
+from Open-Meteo for a given lat/lon and normalizes it into the shared
+`HourlyClimate` shape (`{ timestamp, temperatureC, ghiWm2 }`) described in
+`docs/superpowers/specs/2026-09-12-solarly-m1-design.md`.
+
+**Correction to an earlier assumption in this ADR (and in the design
+spec):** an earlier version of this decision, and
+`docs/superpowers/specs/2026-09-12-solarly-m1-design.md:32`, assumed
+Open-Meteo's free forecast API "doesn't publish irradiance for this use
+case", and built `ghiWm2` by reconstructing it from a cloud-cover forecast
+(Kasten & Czeplak (1980) attenuation applied to a self-contained Haurwitz
+clear-sky estimate in a now-deleted `clear-sky.ts`). That assumption was
+false: the free, keyless Open-Meteo forecast API does publish irradiance
+directly. Requesting `shortwave_radiation` as an hourly variable returns
+global horizontal irradiance (GHI, instantaneous W/m^2) for exactly this
+use case, alongside `direct_radiation`, `diffuse_radiation`,
+`direct_normal_irradiance`, and `global_tilted_irradiance` if ever needed.
+This was caught in review (verified live against the API and against
+https://open-meteo.com/en/docs) and is corrected here. The design spec's
+data-sources section (`...m1-design.md:32`) is now slightly stale on this
+point — it is not being edited as part of this ADR, but a future spec pass
+should update it to match.
 
 ## Decision
 
 - **Endpoint and parameters**: `GET https://api.open-meteo.com/v1/forecast`
-  with `hourly=temperature_2m,cloud_cover`, `timezone=UTC`, and
+  with `hourly=temperature_2m,shortwave_radiation`, `timezone=UTC`, and
   `forecast_days` defaulting to 7 (clamped to Open-Meteo's documented
-  `[1, 16]` range). `timezone=UTC` is used so the "naive" hourly timestamps
-  Open-Meteo returns (no UTC offset) can be treated as UTC unambiguously —
-  the client appends `:00Z` to produce ISO 8601 UTC timestamps for
-  `HourlyClimate.timestamp`. 7 days matches the top of the "3-7 days"
-  forecast horizon called out in the design doc and issue; `forecastDays`
-  is exposed as an option for callers that want fewer.
+  `[1, 16]` range; non-integer or non-finite values are rejected rather
+  than silently coerced or forwarded as-is). `timezone=UTC` is used so the
+  "naive" hourly timestamps Open-Meteo returns (no UTC offset) can be
+  treated as UTC unambiguously — the client appends `:00Z` to produce ISO
+  8601 UTC timestamps for `HourlyClimate.timestamp`. 7 days matches the top
+  of the "3-7 days" forecast horizon called out in the design doc and
+  issue; `forecastDays` is exposed as an option for callers that want
+  fewer.
 
-- **Cloud-cover attenuation formula**: Kasten & Czeplak (1980), "Solar and
-  terrestrial radiation dependent on the amount and type of cloud", _Solar
-  Energy_, 24(2), 177-189:
+- **GHI is read directly from `shortwave_radiation`** — no cloud-cover
+  reconstruction. This replaces the original design (cloud-cover
+  attenuation of a self-contained clear-sky estimate): it's simpler (one
+  fewer moving part, no second solar-position implementation living in
+  `data-sources/`) and more accurate (a real forecasted irradiance value
+  from Open-Meteo's underlying weather model, rather than three compounding
+  approximations: approximate solar position -> approximate clear-sky ->
+  empirical cloud curve). `cloud_cover` is no longer requested since
+  nothing in this client uses it.
 
-  ```
-  GHI = GHI_clear * (1 - 0.75 * (N/8)^3.4)
-  ```
+  This also resolves a duplication concern from the original design:
+  `src/data-sources/clear-sky.ts` (a temporary, reduced-precision
+  reimplementation of sun-position/clear-sky physics, built only to
+  support the attenuation approach) and its tests have been deleted
+  outright, along with `attenuateForCloudCover`. There is no longer a
+  second solar-position/clear-sky implementation living in `data-sources/`
+  to reconcile once `solar-physics/` lands.
 
-  where `N` is cloud cover in oktas (0-8). This is a widely cited, simple
-  empirical curve for attenuating clear-sky irradiance by cloud cover (it
-  underlies cloud-cover-to-irradiance transforms in several open PV
-  toolkits). Open-Meteo reports cloud cover as a percentage (0-100), which
-  maps directly onto the `N/8` fraction (0-1) the formula uses, so no unit
-  conversion table is needed beyond dividing by 100. Implemented as
-  `attenuateForCloudCover` in `src/data-sources/open-meteo.ts`.
+- **Null-padded hours are dropped, not defaulted.** Open-Meteo pads
+  variables whose source model has a shorter horizon than the requested
+  `forecast_days` with JSON `null` (the `time` array is always fully
+  populated; other arrays may contain `null` entries at the tail). Both
+  `temperature_2m` and `shortwave_radiation` are typed as
+  `Array<number | null>` in the response, and any hour where either is
+  `null` is filtered out of the returned `HourlyClimate[]` entirely — it is
+  never coerced to `0` (which would misrepresent an unknown value as "no
+  temperature" or "no sun") and never passed through as `null` in a
+  `number`-typed field. `HourlyClimate` itself keeps `ghiWm2` and
+  `temperatureC` as plain `number` — the "unknown" case is represented by
+  the hour's absence from the array, not by a nullable field, so consumers
+  never need to null-check every entry.
 
-- **Clear-sky GHI estimate**: the attenuation formula needs a clear-sky GHI
-  to attenuate. The M1 design doc assigns clear-sky irradiance modeling to
-  `solar-physics/` (a simplified Ineichen/Haurwitz-style model with a fixed
-  Linke turbidity constant), and restricts "depends on both `solar-physics`
-  and `data-sources`" to `simulation/` only. `solar-physics/` is not
-  implemented yet on this branch (its own issue is still open, and
-  `src/solar-physics/index.ts` is an empty stub), so this client cannot
-  import a shared implementation without violating that boundary or adding
-  a same-PR dependency that could conflict with the parallel
-  `solar-physics` work.
+- **Response validation**: a `200` response missing the `hourly` field
+  throws a clear, specific error instead of letting a raw destructuring
+  `TypeError` propagate. If `temperature_2m` or `shortwave_radiation`
+  aren't the same length as `time`, the client throws rather than silently
+  emitting `undefined`/`NaN` entries.
 
-  Instead, `src/data-sources/clear-sky.ts` implements a small,
-  self-contained clear-sky estimate used _only_ for this attenuation step:
-  a reduced NOAA-style solar-elevation calculation (declination +
-  equation-of-time approximation, ~±0.3° accuracy — deliberately less
-  precise than the ~0.01° algorithm planned for `solar-physics/`, which is
-  overkill for an attenuation envelope), feeding the Haurwitz (1945)
-  clear-sky model:
-
-  ```
-  GHI_clear = 1098 * cos(z) * exp(-0.059 / cos(z))   for cos(z) > 0
-  ```
-
-  (Haurwitz, B. (1945), "Insolation in Relation to Cloudiness and Cloud
-  Density", _Journal of Meteorology_, 2(3), 154-166.) Haurwitz needs only
-  solar zenith angle as input (no turbidity), which keeps this helper
-  self-contained and appropriately lightweight for an attenuation baseline
-  rather than a load-bearing irradiance model.
-
-  **Known duplication / follow-up**: this duplicates a slice of physics
-  that will eventually live in `solar-physics/`. Once that module lands,
-  reconcile by either (a) having `open-meteo.ts` import
-  `solar-physics`'s sun-position/clear-sky functions and deleting
-  `clear-sky.ts`, or (b) moving the cloud-cover attenuation step into
-  `simulation/` (which is allowed to depend on both modules) and having
-  `data-sources` return raw cloud cover instead of a derived GHI. Left as a
-  follow-up rather than blocking this issue on `solar-physics`'s issue.
+- **Error responses surface Open-Meteo's actual reason.** Open-Meteo
+  returns `{"error":true,"reason":"..."}` in the body on failure, and
+  `statusText` is frequently empty over HTTP/2. The client reads `reason`
+  from the body (best-effort; falls back to just the status if the body
+  isn't parseable JSON) and includes it in the thrown error message.
 
 - **Shared `HourlyClimate` type**: defined in `src/data-sources/types.ts`
   on this branch since it didn't already exist. A sibling PR for the NASA
@@ -89,15 +93,16 @@ doc.
 
 ## Consequences
 
-- The Open-Meteo client works standalone today without waiting on
-  `solar-physics/`, but at the cost of a second, lower-precision
-  solar-position implementation living temporarily in `data-sources/`.
-  This is flagged above as a follow-up, not a permanent design.
-- GHI estimates from this client are necessarily approximate (empirical
-  cloud-cover curve + approximate clear-sky + approximate solar position,
-  compounding three sources of error) and should be presented as a
-  forecast estimate, not a precise measurement — consistent with the
-  design doc's general framing of Live/forecast mode versus TMY mode.
+- `ghiWm2` in `HourlyClimate` produced by this client is now a genuinely
+  instantaneous, directly-forecasted GHI value from Open-Meteo, not a
+  derived estimate — more accurate than the original cloud-cover
+  attenuation approach, and with strictly less code to maintain.
+- Hours with null-padded source data are simply absent from the result
+  rather than present with a wrong or fabricated value; callers that need
+  a fixed-length hourly series (e.g. for a chart x-axis) should build it by
+  keying off `timestamp`, not by assuming one entry per requested hour.
 - `HourlyClimate` may need a follow-up merge/rename pass once both this PR
   and the NASA POWER client PR exist, per the note in
   `src/data-sources/types.ts`.
+- This ADR keeps its assigned number (`0040`) per the project's decisions
+  README, which reserves this block for this issue's work.

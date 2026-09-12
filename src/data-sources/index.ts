@@ -11,7 +11,5 @@ export { geocode } from './nominatim'
 export type { GeocodeResult } from './nominatim'
 export {
   fetchOpenMeteoForecast,
-  attenuateForCloudCover,
   type OpenMeteoForecastOptions,
 } from './open-meteo'
-export { clearSkyGhiWm2, solarElevationDegrees } from './clear-sky'
