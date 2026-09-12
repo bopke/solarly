@@ -16,36 +16,13 @@ body {
   color: var(--text);
 }
 
-.app-shell {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 4rem 1.5rem;
-}
-
-.app-shell h1 {
-  margin: 0;
-  font-size: 2.5rem;
-  color: var(--accent);
-}
-
-.tagline {
-  font-size: 1.1rem;
-  margin-top: 0.5rem;
-}
-
-.status-note {
-  margin-top: 2rem;
-  color: #6b6763;
-  font-size: 0.95rem;
+#root {
+  min-height: 100vh;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --text: #f5f0e6;
     --bg: #121110;
-  }
-
-  .status-note {
-    color: #a8a29e;
   }
 }

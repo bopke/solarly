@@ -1,0 +1,33 @@
+.toggle {
+  display: inline-flex;
+  border: 1px solid var(--shell-border);
+  border-radius: 8px;
+  padding: 2px;
+  background: var(--shell-surface);
+  width: 100%;
+}
+
+.option {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--shell-text);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.option:hover {
+  background: var(--shell-hover);
+}
+
+.optionActive {
+  background: var(--shell-accent);
+  color: var(--shell-accent-contrast);
+}
+
+.optionActive:hover {
+  background: var(--shell-accent);
+}

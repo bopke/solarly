@@ -1,0 +1,38 @@
+.shell {
+  --shell-bg: #fffdf7;
+  --shell-surface: #ffffff;
+  --shell-border: #e7e2d6;
+  --shell-text: #1c1917;
+  --shell-muted: #78716c;
+  --shell-accent: #d97706;
+  --shell-accent-hover: #b45309;
+  --shell-accent-contrast: #fffdf7;
+  --shell-hover: #f5f0e6;
+
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+  background: var(--shell-bg);
+  color: var(--shell-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  .shell {
+    --shell-bg: #121110;
+    --shell-surface: #181614;
+    --shell-border: #33302b;
+    --shell-text: #f5f0e6;
+    --shell-muted: #a8a29e;
+    --shell-accent-contrast: #181614;
+    --shell-hover: #221f1b;
+  }
+}
+
+@media (max-width: 768px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: auto;
+    min-height: 100vh;
+  }
+}

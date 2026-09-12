@@ -1,0 +1,22 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1.25rem;
+}
+
+.placeholder {
+  border: 1px dashed var(--shell-border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  color: var(--shell-muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
