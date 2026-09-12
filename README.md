@@ -23,7 +23,7 @@ for details and what's needed to complete it.
 
 ## Local development
 
-Requires Node.js 20+.
+Requires Node.js >=22.12 (see `.nvmrc`; `vitest@5` requires it). Run `nvm use` if you use nvm.
 
 ```bash
 npm install       # install dependencies

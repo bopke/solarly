@@ -7,9 +7,10 @@ name: Deploy to Cloudflare Pages
 #   - CLOUDFLARE_API_TOKEN — a Pages-scoped API token
 #   - CLOUDFLARE_ACCOUNT_ID — the Cloudflare account id
 #
-# Until those secrets are added, this workflow will fail at the deploy
-# step. The rest of the pipeline (install/build) still validates the
-# static bundle. See docs/decisions/0001-project-scaffolding.md.
+# If either secret is missing, this workflow skips the deploy step (with a
+# warning) instead of failing, so CI stays green while the deploy is not
+# yet configured. The rest of the pipeline (install/build) still validates
+# the static bundle. See docs/decisions/0001-project-scaffolding.md.
 
 on:
   push:
@@ -25,23 +26,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run build
       - name: Check Cloudflare secrets are configured
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
-            echo "CF_API_TOKEN_SET=true" >> "$GITHUB_ENV"
+          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
+            echo "CF_SECRETS_SET=true" >> "$GITHUB_ENV"
           else
-            echo "CF_API_TOKEN_SET=false" >> "$GITHUB_ENV"
+            echo "CF_SECRETS_SET=false" >> "$GITHUB_ENV"
             echo "::warning::CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID secrets are not set — skipping deploy step."
           fi
       - name: Deploy to Cloudflare Pages
-        if: ${{ env.CF_API_TOKEN_SET == 'true' }}
-        uses: cloudflare/pages-action@v1
+        if: ${{ env.CF_SECRETS_SET == 'true' }}
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: solarly
-          directory: dist
+          command: pages deploy dist --project-name=solarly
