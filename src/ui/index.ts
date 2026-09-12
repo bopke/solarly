@@ -24,4 +24,4 @@ export {
 export type { Mode, TabId } from './types'
 export { LocationPicker } from './LocationPicker'
 export type { LocationPickerProps, ResolvedLocation } from './LocationPicker'
-export { approximateTimezone } from './timezone'
+export { approximateTimezone, formatUtcOffset } from './timezone'

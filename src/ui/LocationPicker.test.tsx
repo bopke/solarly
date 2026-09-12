@@ -95,6 +95,12 @@ const berlinResult: GeocodeResult = {
   displayName: 'Berlin, Germany',
 }
 
+const parisResult: GeocodeResult = {
+  lat: 48.8566,
+  lon: 2.3522,
+  displayName: 'Paris, France',
+}
+
 describe('LocationPicker', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -150,8 +156,10 @@ describe('LocationPicker', () => {
     expect(screen.getByText(/no results found/i)).toBeInTheDocument()
   })
 
-  it('shows an inline error message when geocode rejects', async () => {
-    mockedGeocode.mockRejectedValue(new Error('Nominatim geocoding request failed'))
+  it('shows an inline error message when geocode rejects with a real failure', async () => {
+    mockedGeocode.mockRejectedValue(
+      new Error('Nominatim geocoding request failed'),
+    )
     render(<LocationPicker onLocationChange={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText('Search for a location'), {
@@ -163,6 +171,25 @@ describe('LocationPicker', () => {
 
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('Nominatim geocoding request failed')
+  })
+
+  it('does not show an error for an AbortError (timeout or cancellation)', async () => {
+    // The Nominatim client normalizes both its own request timeout and a
+    // caller-provided abort to `err.name === 'AbortError'` — the picker
+    // must not surface that as a user-facing error message.
+    const abortError = new Error('signal timed out')
+    abortError.name = 'AbortError'
+    mockedGeocode.mockRejectedValue(abortError)
+    render(<LocationPicker onLocationChange={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText('Search for a location'), {
+      target: { value: 'Berlin' },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('calls onLocationChange with the resolved shape when a result is selected', async () => {
@@ -178,25 +205,127 @@ describe('LocationPicker', () => {
     })
 
     const option = screen.getByText('Berlin, Germany')
-    fireEvent.click(option)
+    fireEvent.mouseDown(option)
 
     expect(onLocationChange).toHaveBeenCalledTimes(1)
     expect(onLocationChange).toHaveBeenCalledWith({
       lat: berlinResult.lat,
       lon: berlinResult.lon,
-      timezone: 'UTC+1',
+      utcOffsetHours: 1,
     })
 
     // The resolved coordinates are also displayed to the user.
     expect(screen.getByText(/52\.51700/)).toBeInTheDocument()
+    expect(screen.getByText(/≈ UTC\+1/)).toBeInTheDocument()
   })
 
-  it('places the pin and resolves a location on map click (fallback interaction)', async () => {
+  it('flies the map to the selected result at the resolved zoom', async () => {
+    mockedGeocode.mockResolvedValue([berlinResult])
+    render(<LocationPicker onLocationChange={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText('Search for a location'), {
+      target: { value: 'Berlin' },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    fireEvent.mouseDown(screen.getByText('Berlin, Germany'))
+
+    const map = mapInstances[0]
+    expect(map.center).toEqual([berlinResult.lon, berlinResult.lat])
+    expect(map.zoom).toBe(11)
+  })
+
+  it('creates a marker when a search result is selected', async () => {
+    mockedGeocode.mockResolvedValue([berlinResult])
+    render(<LocationPicker onLocationChange={vi.fn()} />)
+
+    expect(markerInstances).toHaveLength(0)
+
+    fireEvent.change(screen.getByLabelText('Search for a location'), {
+      target: { value: 'Berlin' },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    fireEvent.mouseDown(screen.getByText('Berlin, Germany'))
+
+    expect(markerInstances).toHaveLength(1)
+    expect(markerInstances[0].lngLat).toEqual({
+      lng: berlinResult.lon,
+      lat: berlinResult.lat,
+    })
+  })
+
+  it('does not re-trigger a search after selecting a result (regression)', async () => {
+    mockedGeocode.mockResolvedValue([berlinResult])
+    render(<LocationPicker onLocationChange={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText('Search for a location'), {
+      target: { value: 'Berlin' },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    fireEvent.mouseDown(screen.getByText('Berlin, Germany'))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    // Selecting a result set the query to the displayed name; that alone
+    // must not have fired a second search.
+    expect(mockedGeocode).toHaveBeenCalledTimes(1)
+  })
+
+  it('regression: selecting a result whose display name equals the typed query does not swallow the next search', async () => {
+    // This is the exact repro from the review: type text that already
+    // equals the result's displayName (so `setQuery` in the selection
+    // handler is a no-op and the search effect never re-runs), then type
+    // something new — the next genuine search must still fire. A one-shot
+    // "skip the next effect run" boolean flag fails this because nothing
+    // ever consumes it.
+    mockedGeocode
+      .mockResolvedValueOnce([berlinResult])
+      .mockResolvedValueOnce([parisResult])
+    render(<LocationPicker onLocationChange={vi.fn()} />)
+
+    const input = screen.getByLabelText('Search for a location')
+
+    // Type exactly "Berlin, Germany" — the same string the result option
+    // will display.
+    fireEvent.change(input, { target: { value: 'Berlin, Germany' } })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(mockedGeocode).toHaveBeenCalledTimes(1)
+
+    // Select it. setQuery('Berlin, Germany') is a no-op since query is
+    // already that value.
+    fireEvent.mouseDown(screen.getByText('Berlin, Germany'))
+
+    // Now type a genuinely new query.
+    fireEvent.change(input, { target: { value: 'Paris' } })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    expect(mockedGeocode).toHaveBeenCalledTimes(2)
+    expect(mockedGeocode).toHaveBeenLastCalledWith(
+      'Paris',
+      expect.objectContaining({ signal: expect.anything() }),
+    )
+  })
+
+  it('places the pin and resolves a location on map click without forcing a camera move (fallback interaction)', async () => {
     const onLocationChange = vi.fn()
     render(<LocationPicker onLocationChange={onLocationChange} />)
 
     const map = mapInstances[0]
     expect(map).toBeDefined()
+    const centerBeforeClick = map.center
+    const zoomBeforeClick = map.zoom
 
     act(() => {
       map.handlers['click']?.forEach((handler) =>
@@ -207,11 +336,17 @@ describe('LocationPicker', () => {
     expect(onLocationChange).toHaveBeenCalledWith({
       lat: 48.8566,
       lon: 2.3522,
-      timezone: 'UTC+0',
+      utcOffsetHours: 0,
     })
+
+    // Map click is a coarse-exploration interaction: it must not recenter
+    // or force a zoom change (regression for the "every pin placement
+    // forces zoom 11" bug).
+    expect(map.center).toEqual(centerBeforeClick)
+    expect(map.zoom).toBe(zoomBeforeClick)
   })
 
-  it('updates the resolved location when the pin is dragged', async () => {
+  it('updates the resolved location when the pin is dragged, without forcing a camera move', async () => {
     const onLocationChange = vi.fn()
     render(
       <LocationPicker
@@ -220,9 +355,13 @@ describe('LocationPicker', () => {
       />,
     )
 
+    const map = mapInstances[0]
     const marker = markerInstances[0]
     expect(marker).toBeDefined()
     marker.setLngLat([-73.9, 40.8])
+
+    const zoomBeforeDrag = map.zoom
+    const centerBeforeDrag = map.center
 
     act(() => {
       marker.handlers['dragend']?.forEach((handler) => handler())
@@ -231,7 +370,12 @@ describe('LocationPicker', () => {
     expect(onLocationChange).toHaveBeenCalledWith({
       lat: 40.8,
       lon: -73.9,
-      timezone: 'UTC-5',
+      utcOffsetHours: -5,
     })
+
+    // Dragging the pin must not snap the map back to the resolved zoom —
+    // the user is already positioned/zoomed where they want to be.
+    expect(map.zoom).toBe(zoomBeforeDrag)
+    expect(map.center).toEqual(centerBeforeDrag)
   })
 })
