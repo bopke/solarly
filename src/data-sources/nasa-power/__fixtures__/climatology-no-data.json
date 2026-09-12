@@ -1,0 +1,57 @@
+{
+  "type": "Feature",
+  "geometry": { "type": "Point", "coordinates": [-140.0, -85.0, 0.0] },
+  "properties": {
+    "parameter": {
+      "ALLSKY_SFC_SW_DWN": {
+        "JAN": -999.0,
+        "FEB": -999.0,
+        "MAR": -999.0,
+        "APR": -999.0,
+        "MAY": -999.0,
+        "JUN": -999.0,
+        "JUL": -999.0,
+        "AUG": -999.0,
+        "SEP": -999.0,
+        "OCT": -999.0,
+        "NOV": -999.0,
+        "DEC": -999.0,
+        "ANN": -999.0
+      },
+      "T2M": {
+        "JAN": -999.0,
+        "FEB": -999.0,
+        "MAR": -999.0,
+        "APR": -999.0,
+        "MAY": -999.0,
+        "JUN": -999.0,
+        "JUL": -999.0,
+        "AUG": -999.0,
+        "SEP": -999.0,
+        "OCT": -999.0,
+        "NOV": -999.0,
+        "DEC": -999.0,
+        "ANN": -999.0
+      }
+    }
+  },
+  "header": {
+    "title": "NASA/POWER Source Native Resolution Climatology Climatologies",
+    "api": { "version": "v2.9.7", "name": "POWER Climatology API" },
+    "sources": ["SYN1DEG", "MERRA2"],
+    "fill_value": -999.0,
+    "time_standard": "LST",
+    "range": "20-year Meteorological and Solar Monthly & Annual Climatologies (January 2001 - December 2020)"
+  },
+  "messages": [
+    "The requested parameters are retrieved from a pre-computed climatological period (January 2001 - December 2020)"
+  ],
+  "parameters": {
+    "ALLSKY_SFC_SW_DWN": {
+      "units": "kW-hr/m^2/day",
+      "longname": "All Sky Surface Shortwave Downward Irradiance"
+    },
+    "T2M": { "units": "C", "longname": "Temperature at 2 Meters" }
+  },
+  "times": { "data": 0.061, "process": 0.03 }
+}
