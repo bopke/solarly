@@ -15,11 +15,12 @@ generation engine, data sources, and chart UI land in follow-up issues.
 See the design spec linked below for the full M1 scope and the roadmap
 beyond it.
 
-The app is **not yet deployed live**. A Cloudflare Pages deploy config
-exists (`wrangler.toml`, `.github/workflows/deploy.yml`) but has not been
-used to trigger an actual deploy — see
-[`docs/decisions/0001-project-scaffolding.md`](docs/decisions/0001-project-scaffolding.md)
-for details and what's needed to complete it.
+Deployment is handled by Cloudflare's Git-integrated **Workers Builds**
+(connected via the dashboard) — every push to `main` builds and deploys
+automatically via `wrangler.toml`'s static-assets config, with no GitHub
+Actions workflow or secrets involved. See
+[`docs/decisions/0002-cloudflare-workers-deploy.md`](docs/decisions/0002-cloudflare-workers-deploy.md)
+for details.
 
 ## Local development
 

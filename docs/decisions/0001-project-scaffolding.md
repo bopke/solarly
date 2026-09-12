@@ -53,19 +53,21 @@ react-ts`). The spec already calls for Vite; it was not re-litigated here.
   lint/format-check/test/build on every PR and push to `main`,
   independent of deploy credentials.
 
+  **Superseded by [0002](0002-cloudflare-workers-deploy.md):** once the
+  repo owner actually connected Cloudflare, it turned out to be a
+  Workers project with Git integration, not Pages — the deploy config and
+  GitHub Actions workflow described above were replaced accordingly. The
+  rest of this ADR (build tool, testing, lint/format) still stands.
+
 ## Consequences
 
 - Anyone building on this scaffold can run `npm run dev`, `npm run
 build`, `npm test`, `npm run lint`, and `npm run format` immediately;
   CI enforces the same on every PR.
-- The app is **not yet live** on a Cloudflare Pages URL. Someone with
-  Cloudflare account access needs to either connect this repo to a
-  Cloudflare Pages project (dashboard, or `wrangler pages project create
-solarly`) and add the two GitHub Actions secrets, or run `wrangler
-pages deploy dist` manually after a local build. Until then, the
-  acceptance criterion "app is live at a Cloudflare Pages URL" is
-  unverified — this is a known gap, tracked back to the person with
-  Cloudflare credentials, not a silent claim of a working deploy.
+- Live deploy status: see [0002](0002-cloudflare-workers-deploy.md) —
+  the repo ended up connected to Cloudflare Workers (not Pages), which
+  changed the deploy config and made the GitHub Actions secrets
+  mentioned above unnecessary.
 - Because Vitest's config is merged into `vite.config.ts`, the two tools'
   major versions are coupled going forward; bumping `vite` may require
   bumping `vitest` in the same change (see note above).
