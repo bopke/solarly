@@ -51,6 +51,7 @@ these against the live API:
   based on a real `(-140, -85)` API response rather than a byte-for-byte
   capture; used to lock in that a real `0.0` is preserved rather than
   mistaken for the fill sentinel.
+
 ## Open-Meteo (live forecast)
 
 `open-meteo.ts` fetches an hourly GHI (`shortwave_radiation`) + temperature
