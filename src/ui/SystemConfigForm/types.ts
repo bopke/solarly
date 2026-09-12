@@ -25,6 +25,16 @@ export interface SystemConfig {
   azimuthDeg: number
   /** Number of panels in the array. Must be a positive integer. */
   panelCount: number
+  /**
+   * Rated power per panel at Standard Test Conditions (STC), in
+   * watts-peak. Prefilled from the selected preset's `ratedWattsPeak`
+   * when a preset is chosen, but always independently editable (present
+   * and required even in "Custom" mode) — together with `panelCount` this
+   * is what lets a consumer (e.g. `simulation`) compute the system's rated
+   * capacity as `panelCount * wattsPerPanel` without needing a live
+   * `presetId`.
+   */
+  wattsPerPanel: number
   /** Panel efficiency at STC, as a percentage. Valid range: 0-100. */
   efficiencyPercent: number
   /**
@@ -51,10 +61,11 @@ export type SystemConfigFieldErrors = Partial<
  * Callback invoked whenever the form's config or validity changes.
  *
  * `config` reflects the best-effort parsed numeric values (an invalid or
- * empty field falls back to its last valid value, or 0, so the shape is
- * always a complete `SystemConfig`) — always check `isValid` before
- * treating `config` as trustworthy input to a calculation, since invalid
- * values are surfaced inline rather than clamped or rejected outright.
+ * empty field falls back to `0`, not any previously-valid value, so the
+ * shape is always a complete `SystemConfig`) — always check `isValid`
+ * before treating `config` as trustworthy input to a calculation, since
+ * invalid values are surfaced inline rather than clamped or rejected
+ * outright.
  */
 export type SystemConfigChangeHandler = (
   config: SystemConfig,

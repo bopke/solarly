@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PANEL_PRESETS } from '../../panel-presets'
 import { SystemConfigForm } from './SystemConfigForm'
 import type { SystemConfig } from './types'
+import { validateField } from './validation'
 
 function getLastCall(onChange: ReturnType<typeof vi.fn>) {
   return onChange.mock.calls[onChange.mock.calls.length - 1] as [
@@ -30,7 +31,7 @@ describe('SystemConfigForm', () => {
   })
 
   describe('preset prefill', () => {
-    it('prefills efficiency and temperature coefficient from the selected preset', async () => {
+    it('prefills watts per panel, efficiency, and temperature coefficient from the selected preset', async () => {
       const user = userEvent.setup()
       render(<SystemConfigForm onChange={onChange} />)
 
@@ -42,6 +43,7 @@ describe('SystemConfigForm', () => {
 
       const [config, isValid] = getLastCall(onChange)
       expect(config.presetId).toBe(preset.id)
+      expect(config.wattsPerPanel).toBe(preset.ratedWattsPeak)
       expect(config.efficiencyPercent).toBe(preset.efficiencyPercent)
       expect(config.tempCoefficientPercentPerC).toBe(
         preset.tempCoefficientPercentPerC,
@@ -85,8 +87,48 @@ describe('SystemConfigForm', () => {
     })
   })
 
+  describe('initialConfig with a preset id', () => {
+    it('derives the numeric fields from the named preset, not the generic defaults', () => {
+      const preset = PANEL_PRESETS.find((p) => p.id === 'longi-himo6-450')
+      if (!preset) throw new Error('fixture preset missing')
+
+      render(
+        <SystemConfigForm
+          initialConfig={{ presetId: preset.id }}
+          onChange={onChange}
+        />,
+      )
+
+      const [config, isValid] = getLastCall(onChange)
+      expect(config.presetId).toBe(preset.id)
+      expect(config.wattsPerPanel).toBe(preset.ratedWattsPeak)
+      expect(config.efficiencyPercent).toBe(preset.efficiencyPercent)
+      expect(config.tempCoefficientPercentPerC).toBe(
+        preset.tempCoefficientPercentPerC,
+      )
+      expect(isValid).toBe(true)
+    })
+
+    it('lets explicit initialConfig fields override the preset values', () => {
+      const preset = PANEL_PRESETS.find((p) => p.id === 'longi-himo6-450')
+      if (!preset) throw new Error('fixture preset missing')
+
+      render(
+        <SystemConfigForm
+          initialConfig={{ presetId: preset.id, wattsPerPanel: 500 }}
+          onChange={onChange}
+        />,
+      )
+
+      const [config] = getLastCall(onChange)
+      expect(config.presetId).toBe(preset.id)
+      expect(config.wattsPerPanel).toBe(500)
+      expect(config.efficiencyPercent).toBe(preset.efficiencyPercent)
+    })
+  })
+
   describe('fields stay editable after a preset is chosen', () => {
-    it('allows editing every field after selecting a preset, and clears presetId once edited', async () => {
+    it('allows editing every field after selecting a preset, and clears presetId once a panel-model field is edited', async () => {
       const user = userEvent.setup()
       render(<SystemConfigForm onChange={onChange} />)
 
@@ -99,6 +141,7 @@ describe('SystemConfigForm', () => {
         [/tilt/i, '25'],
         [/azimuth/i, '90'],
         [/panel count/i, '12'],
+        [/watts per panel/i, '410'],
         [/efficiency/i, '19.5'],
         [/temperature coefficient/i, '-0.4'],
         [/system losses/i, '10'],
@@ -118,6 +161,7 @@ describe('SystemConfigForm', () => {
         tiltDeg: 25,
         azimuthDeg: 90,
         panelCount: 12,
+        wattsPerPanel: 410,
         efficiencyPercent: 19.5,
         tempCoefficientPercentPerC: -0.4,
         systemLossesPercent: 10,
@@ -125,6 +169,48 @@ describe('SystemConfigForm', () => {
       })
       expect(isValid).toBe(true)
     })
+
+    it('does not clear the preset when editing an installation field (tilt, azimuth, panel count, system losses, manual shading)', async () => {
+      const user = userEvent.setup()
+      render(<SystemConfigForm onChange={onChange} />)
+
+      const preset = PANEL_PRESETS[0]
+      await user.selectOptions(
+        screen.getByLabelText(/panel preset/i),
+        preset.id,
+      )
+
+      const input = screen.getByLabelText(/tilt/i)
+      await user.clear(input)
+      await user.type(input, '25')
+
+      const [config] = getLastCall(onChange)
+      expect(config.presetId).toBe(preset.id)
+      expect(config.tiltDeg).toBe(25)
+    })
+
+    it.each([
+      [/watts per panel/i, '410'],
+      [/^efficiency/i, '19.5'],
+      [/temperature coefficient/i, '-0.4'],
+    ])(
+      'clears the preset when editing the panel-model field matched by %s',
+      async (labelPattern, newValue) => {
+        const user = userEvent.setup()
+        render(<SystemConfigForm onChange={onChange} />)
+
+        await user.selectOptions(
+          screen.getByLabelText(/panel preset/i),
+          PANEL_PRESETS[0].id,
+        )
+
+        const input = screen.getByLabelText(labelPattern)
+        await user.clear(input)
+        await user.type(input, newValue)
+
+        expect(getLastCall(onChange)[0].presetId).toBeNull()
+      },
+    )
   })
 
   describe('validation', () => {
@@ -219,23 +305,12 @@ describe('SystemConfigForm', () => {
       expect(getLastCall(onChange)[1]).toBe(false)
     })
 
-    it('flags a non-numeric field as invalid', async () => {
-      const user = userEvent.setup()
-      render(<SystemConfigForm onChange={onChange} />)
-      const input = screen.getByLabelText(/panel count/i)
-      await user.clear(input)
-      await user.type(input, 'abc')
-
-      // number inputs generally reject non-numeric text, but the
-      // component must still not report a valid config if it does end up
-      // getting through (e.g. via paste in a real browser).
-      const [, isValid] = getLastCall(onChange)
-      if (input.getAttribute('value') === 'abc') {
-        expect(isValid).toBe(false)
-      } else {
-        // Browser-level input coercion left it empty -> required error.
-        expect(screen.getByRole('alert')).toBeInTheDocument()
-      }
+    it('flags a non-numeric field as invalid', () => {
+      // jsdom's <input type="number"> doesn't reliably model real-browser
+      // text-entry coercion (and userEvent.type on it is flaky across
+      // environments), so this exercises the actual validation edge
+      // directly rather than branching on incidental DOM behavior.
+      expect(validateField('panelCount', 'abc')).toMatch(/must be a number/i)
     })
 
     it('accepts a negative temperature coefficient without flagging it', async () => {
@@ -246,6 +321,30 @@ describe('SystemConfigForm', () => {
       const [config, isValid] = getLastCall(onChange)
       expect(config.tempCoefficientPercentPerC).toBe(-0.45)
       expect(isValid).toBe(true)
+    })
+
+    it('flags a positive temperature coefficient as invalid', async () => {
+      render(<SystemConfigForm onChange={onChange} />)
+      await setField(/temperature coefficient/i, '0.35')
+
+      expect(screen.getByRole('alert')).toHaveTextContent(/at most 0/i)
+      expect(getLastCall(onChange)[1]).toBe(false)
+    })
+
+    it('flags a non-positive watts-per-panel value as invalid', async () => {
+      render(<SystemConfigForm onChange={onChange} />)
+      await setField(/watts per panel/i, '0')
+
+      expect(screen.getByRole('alert')).toHaveTextContent(/greater than 0/i)
+      expect(getLastCall(onChange)[1]).toBe(false)
+    })
+
+    it('flags an absurdly large panel count as invalid', async () => {
+      render(<SystemConfigForm onChange={onChange} />)
+      await setField(/panel count/i, '1000000')
+
+      expect(screen.getByRole('alert')).toHaveTextContent(/at most 100000/i)
+      expect(getLastCall(onChange)[1]).toBe(false)
     })
 
     it('recovers to valid once an out-of-range value is corrected', async () => {

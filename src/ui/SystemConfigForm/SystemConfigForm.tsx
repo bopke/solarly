@@ -15,6 +15,7 @@ const DEFAULT_VALUES: SystemConfigFieldValues = {
   tiltDeg: '30',
   azimuthDeg: '180',
   panelCount: '10',
+  wattsPerPanel: '400',
   efficiencyPercent: '20',
   tempCoefficientPercentPerC: '-0.35',
   systemLossesPercent: '14',
@@ -22,6 +23,16 @@ const DEFAULT_VALUES: SystemConfigFieldValues = {
 }
 
 const CUSTOM_OPTION_VALUE = ''
+
+/**
+ * Fields that a panel preset actually writes. Editing one of these while a
+ * preset is selected means the config no longer matches that preset, so it
+ * detaches (`presetId` resets to `null`). Editing any other field (tilt,
+ * azimuth, panel count, system losses, manual shading) is a property of
+ * the *installation*, not the panel model, and must not clear the preset.
+ */
+const PRESET_DERIVED_FIELDS: ReadonlySet<keyof SystemConfigFieldValues> =
+  new Set(['wattsPerPanel', 'efficiencyPercent', 'tempCoefficientPercentPerC'])
 
 export interface SystemConfigFormProps {
   /** Panel presets to populate the dropdown with. Defaults to `PANEL_PRESETS`. */
@@ -36,38 +47,62 @@ export interface SystemConfigFormProps {
   onChange: SystemConfigChangeHandler
 }
 
+/**
+ * Derives the form's initial field values from `initialConfig`. When
+ * `initialConfig.presetId` names a known preset, that preset's values seed
+ * the preset-derived fields (efficiency, temp coefficient, watts per
+ * panel) *before* `initialConfig`'s own fields are applied on top — so the
+ * dropdown and the numeric fields agree with each other on first render,
+ * and any field explicitly set on `initialConfig` still wins.
+ */
 function initialValuesFrom(
   initialConfig: Partial<SystemConfig> | undefined,
+  presets: PanelPreset[],
 ): SystemConfigFieldValues {
   if (!initialConfig) {
     return DEFAULT_VALUES
   }
+  const preset = initialConfig.presetId
+    ? presets.find((p) => p.id === initialConfig.presetId)
+    : undefined
+  const base: SystemConfigFieldValues = preset
+    ? {
+        ...DEFAULT_VALUES,
+        wattsPerPanel: String(preset.ratedWattsPeak),
+        efficiencyPercent: String(preset.efficiencyPercent),
+        tempCoefficientPercentPerC: String(preset.tempCoefficientPercentPerC),
+      }
+    : DEFAULT_VALUES
   return {
-    tiltDeg: String(initialConfig.tiltDeg ?? DEFAULT_VALUES.tiltDeg),
-    azimuthDeg: String(initialConfig.azimuthDeg ?? DEFAULT_VALUES.azimuthDeg),
-    panelCount: String(initialConfig.panelCount ?? DEFAULT_VALUES.panelCount),
+    tiltDeg: String(initialConfig.tiltDeg ?? base.tiltDeg),
+    azimuthDeg: String(initialConfig.azimuthDeg ?? base.azimuthDeg),
+    panelCount: String(initialConfig.panelCount ?? base.panelCount),
+    wattsPerPanel: String(initialConfig.wattsPerPanel ?? base.wattsPerPanel),
     efficiencyPercent: String(
-      initialConfig.efficiencyPercent ?? DEFAULT_VALUES.efficiencyPercent,
+      initialConfig.efficiencyPercent ?? base.efficiencyPercent,
     ),
     tempCoefficientPercentPerC: String(
       initialConfig.tempCoefficientPercentPerC ??
-        DEFAULT_VALUES.tempCoefficientPercentPerC,
+        base.tempCoefficientPercentPerC,
     ),
     systemLossesPercent: String(
-      initialConfig.systemLossesPercent ?? DEFAULT_VALUES.systemLossesPercent,
+      initialConfig.systemLossesPercent ?? base.systemLossesPercent,
     ),
     manualShadingPercent: String(
-      initialConfig.manualShadingPercent ?? DEFAULT_VALUES.manualShadingPercent,
+      initialConfig.manualShadingPercent ?? base.manualShadingPercent,
     ),
   }
 }
 
 /**
  * System config form: a panel-preset dropdown plus editable numeric
- * fields (tilt, azimuth, panel count, efficiency, temperature
- * coefficient, system losses, manual shading). Selecting a preset
- * prefills the fields below; every field stays independently editable
- * afterwards. Invalid values are flagged inline and never silently
+ * fields (tilt, azimuth, panel count, watts per panel, efficiency,
+ * temperature coefficient, system losses, manual shading). Selecting a
+ * preset prefills the panel-model fields (watts per panel, efficiency,
+ * temperature coefficient) below; every field stays independently
+ * editable afterwards, and editing an installation field (tilt, azimuth,
+ * panel count, system losses, manual shading) does not disturb the
+ * selected preset. Invalid values are flagged inline and never silently
  * clamped — `onChange`'s `isValid` flag reflects that.
  *
  * Self-contained: takes no dependency on any app-shell internals, so it
@@ -82,7 +117,7 @@ export function SystemConfigForm({
     initialConfig?.presetId ?? null,
   )
   const [values, setValues] = useState<SystemConfigFieldValues>(() =>
-    initialValuesFrom(initialConfig),
+    initialValuesFrom(initialConfig, presets),
   )
   const formId = useId()
 
@@ -95,6 +130,7 @@ export function SystemConfigForm({
       tiltDeg: parseFieldOrFallback(values.tiltDeg, 0),
       azimuthDeg: parseFieldOrFallback(values.azimuthDeg, 0),
       panelCount: parseFieldOrFallback(values.panelCount, 0),
+      wattsPerPanel: parseFieldOrFallback(values.wattsPerPanel, 0),
       efficiencyPercent: parseFieldOrFallback(values.efficiencyPercent, 0),
       tempCoefficientPercentPerC: parseFieldOrFallback(
         values.tempCoefficientPercentPerC,
@@ -128,6 +164,7 @@ export function SystemConfigForm({
     setPresetId(preset.id)
     setValues((prev) => ({
       ...prev,
+      wattsPerPanel: String(preset.ratedWattsPeak),
       efficiencyPercent: String(preset.efficiencyPercent),
       tempCoefficientPercentPerC: String(preset.tempCoefficientPercentPerC),
     }))
@@ -139,8 +176,13 @@ export function SystemConfigForm({
   ) {
     setValues((prev) => ({ ...prev, [field]: rawValue }))
     // Editing a field manually detaches the config from "this is exactly
-    // preset X" — the preset only ever acts as a one-time prefill.
-    setPresetId(null)
+    // preset X" — but only when the field being edited is one the preset
+    // actually writes. Installation-specific fields (tilt, azimuth, panel
+    // count, system losses, manual shading) don't describe the panel
+    // model, so editing them must not clear which panel is recorded.
+    if (PRESET_DERIVED_FIELDS.has(field)) {
+      setPresetId(null)
+    }
   }
 
   const azimuthValue = Number(values.azimuthDeg)
@@ -194,6 +236,15 @@ export function SystemConfigForm({
         label="Panel count"
         value={values.panelCount}
         error={errors.panelCount}
+        onChange={handleFieldChange}
+      />
+
+      <NumberField
+        formId={formId}
+        field="wattsPerPanel"
+        label="Watts per panel (Wp)"
+        value={values.wattsPerPanel}
+        error={errors.wattsPerPanel}
         onChange={handleFieldChange}
       />
 
@@ -257,6 +308,11 @@ function NumberField({
 }: NumberFieldProps) {
   const inputId = `${formId}-${field}`
   const errorId = `${inputId}-error`
+  const hintId = `${inputId}-hint`
+  const describedBy =
+    [hint && !error ? hintId : null, error ? errorId : null]
+      .filter(Boolean)
+      .join(' ') || undefined
 
   return (
     <div className={styles.field}>
@@ -272,9 +328,13 @@ function NumberField({
         value={value}
         onChange={(event) => onChange(field, event.target.value)}
         aria-invalid={error ? true : undefined}
-        aria-describedby={error ? errorId : undefined}
+        aria-describedby={describedBy}
       />
-      {hint && !error ? <p className={styles.hint}>{hint}</p> : null}
+      {hint && !error ? (
+        <p id={hintId} className={styles.hint}>
+          {hint}
+        </p>
+      ) : null}
       {error ? (
         <p id={errorId} role="alert" className={styles.error}>
           {error}
