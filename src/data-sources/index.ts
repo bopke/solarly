@@ -9,3 +9,7 @@ export {
 } from './nasa-power/errors.ts'
 export { geocode } from './nominatim'
 export type { GeocodeResult } from './nominatim'
+export {
+  fetchOpenMeteoForecast,
+  type OpenMeteoForecastOptions,
+} from './open-meteo'

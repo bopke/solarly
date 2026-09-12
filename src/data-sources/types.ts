@@ -24,7 +24,20 @@ export interface HourlyClimate {
   timestamp: string
   /** Ambient air temperature, degrees Celsius. */
   temperatureC: number
-  /** All-sky global horizontal irradiance, instantaneous(-ish) W/m^2 for this sample. */
+  /**
+   * Global horizontal irradiance, W/m^2.
+   *
+   * For the Open-Meteo client this is `shortwave_radiation`, which is
+   * Open-Meteo's *backward-looking hourly mean* — the value stamped at
+   * `timestamp` (`HH:00Z`) is the average irradiance over the preceding
+   * hour, i.e. `(HH-1):00Z` to `HH:00Z`, not an instantaneous sample taken
+   * at `HH:00Z`. See docs/decisions/0040-open-meteo-client.md for details.
+   * A future `simulation` module (issue #9/#10) that pairs this value with
+   * a sun position computed exactly at `HH:00Z` should account for this
+   * ~30-minute misalignment between the irradiance interval and the sun
+   * geometry instant, especially near sunrise/sunset where irradiance
+   * changes fastest.
+   */
   ghiWm2: number
 }
 
