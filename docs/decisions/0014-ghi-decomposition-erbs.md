@@ -86,16 +86,56 @@ radians)`, computed the same way `clearSkyIrradiance` computes it, from
   input-validation convention already established in `clearSkyIrradiance`
   and `poaIrradiance` (explicit guards rather than relying on comparisons
   that silently pass `NaN` through, and avoiding a division by a
-  zero/negative `cos(zenith)` when computing `kt`). Real-world GHI
-  measurements can occasionally push `kt` slightly outside the model's
-  ideal `[0, ~1]` range (e.g. brief cloud-edge irradiance enhancement
-  exceeding the clear-sky/extraterrestrial estimate) — Erbs's `kt > 0.8`
-  branch already returns a flat constant regardless of how large `kt`
-  gets, so the formula itself doesn't blow up, but the diffuse fraction is
-  still explicitly clamped to `[0, 1]` and the resulting `directWm2`/
+  zero/negative `cos(zenith)` when computing `kt`). Once past that guard,
+  a `kt` that lands mildly outside the model's ideal `[0, ~1]` range (e.g.
+  brief cloud-edge irradiance enhancement exceeding the clear-sky estimate,
+  or the `kt > 1` fixture in `decomposeGhi.test.ts`) is handled safely:
+  Erbs's `kt > 0.8` branch already returns a flat constant regardless of
+  how large `kt` gets, so the formula itself doesn't blow up, and the
+  diffuse fraction is further clamped to `[0, 1]` with `directWm2`/
   `diffuseWm2` clamped to non-negative (and `diffuseWm2` capped at
-  `ghiWm2`) as an explicit safety net rather than relying on the
-  piecewise formula's own well-behavedness.
+  `ghiWm2`) as an explicit safety net. **This says nothing about `kt`'s
+  denominator, though** — see the low-sun guards below, which fix a
+  distinct bug where the denominator itself, not the formula's output, was
+  the unbounded quantity.
+- **Low-sun guards (added post-review, PR #33).** The first version of
+  this function computed `kt = ghiWm2 / (SOLAR_CONSTANT_W_M2 *
+cos(zenith))` with no floor on `cos(zenith)`. As sun altitude approaches
+  0°, `cos(zenith) = sin(altitude)` approaches 0, so `kt`'s _denominator_
+  shrinks toward zero independently of how overcast the sky actually was —
+  unlike the "out-of-range `kt`" case above, this isn't the formula's
+  output misbehaving, it's `kt` itself becoming an unbounded, physically
+  meaningless ratio. That let a low but nonzero GHI reading at a very low
+  sun altitude compute a `kt` large enough to land in the `kt > 0.8`
+  "mostly clear sky" branch (`kd = 0.165`, 83.5% beam) for a sample that
+  was, physically, entirely diffuse (e.g. an interval-averaged GHI reading
+  at sunrise/sunset). The existing clamps in the paragraph above don't
+  catch this: they bound `kd` and the final components, not `kt`'s
+  denominator, so a well-formed-looking `kd = 0.165` output was still
+  wrong. The damage compounds one function downstream: `poaIrradiance()`
+  recovers DNI by dividing horizontal beam back by the same near-zero
+  `cos(zenith)`, so a spurious beam component here becomes a much larger
+  spurious POA irradiance there (measured up to ~55x GHI at 0.5° altitude
+  before this fix, 0x — correctly zero beam — after it, matching pvlib).
+  Fixed by mirroring pvlib's own two `irradiance.erbs` guards:
+  - `MIN_COS_ZENITH = 0.065` (matching pvlib's `min_cos_zenith` default,
+    ≈ altitude 3.73°) floors `cos(zenith)` before it's used as `kt`'s
+    denominator, so `kt` can no longer inflate without bound as altitude
+    → 0.
+  - `MIN_SUN_ALTITUDE_FOR_KT_DEG = 3°` (matching pvlib's `max_zenith=87`
+    default) returns `{ directWm2: 0, diffuseWm2: ghiWm2 }` (all-diffuse)
+    directly below that altitude, without computing `kt` at all — at these
+    altitudes, real-world interval-averaged GHI is routinely inconsistent
+    with an instantaneous clear-sky estimate for that altitude (see
+    `clearSkyIrradiance(3)` returning only ~7.9 W/m² total), so even a
+    floored `kt` isn't a trustworthy sky-clarity signal there.
+    Both branches still return `directWm2 + diffuseWm2 === ghiWm2` exactly
+    (`0 + ghiWm2` and the ordinary clamped-sum case both conserve energy), so
+    this doesn't weaken the energy-conservation property this module already
+    relies on. Regression tests for the reviewer's exact measured cases
+    (GHI=10 at altitude=0.5°, GHI=30 at altitude=2°, both fed through the
+    full `decomposeGhi` → `poaIrradiance` pipeline) are in
+    `decomposeGhi.test.ts`.
 
 ## Decision
 
@@ -106,9 +146,12 @@ radians)`, computed the same way `clearSkyIrradiance` computes it, from
   `kt > 0.80`: `kd = 0.165`. No external PV-modeling dependency —
   transcribed directly from the published coefficients / cross-checked
   against pvlib-python's `irradiance.erbs` reference implementation.
-- `kt = ghiWm2 / (1361 * cos(zenith))`, no Earth-Sun distance eccentricity
-  correction (see above) — a known, documented simplification matching
-  `clearSkyIrradiance`'s existing gap (ADR 0011), not an independent one.
+- `kt = ghiWm2 / (1361 * max(cos(zenith), MIN_COS_ZENITH))`, no Earth-Sun
+  distance eccentricity correction (see above) — a known, documented
+  simplification matching `clearSkyIrradiance`'s existing gap (ADR 0011),
+  not an independent one. Sun altitude below `MIN_SUN_ALTITUDE_FOR_KT_DEG`
+  (3°) skips this computation entirely and returns all-diffuse output —
+  see the low-sun guards discussion above.
 - `directWm2 = ghiWm2 - diffuseWm2` — the horizontal beam convention,
   matching `poaIrradiance()`'s `horizontalIrradiance.direct` and
   `clearSkyIrradiance()`'s `direct` output exactly, so this function's
@@ -119,12 +162,29 @@ radians)`, computed the same way `clearSkyIrradiance` computes it, from
   `[0, ghiWm2]`; `directWm2` clamped to `>= 0` — so out-of-ideal-range
   `kt` values from real measurement noise can't produce a negative or
   GHI-exceeding component.
+- Low-sun guards, mirroring pvlib's `irradiance.erbs` defaults (added
+  post-review, PR #33 — see above): `cos(zenith)` is floored at
+  `MIN_COS_ZENITH = 0.065` before it's used as `kt`'s denominator, and sun
+  altitude below `MIN_SUN_ALTITUDE_FOR_KT_DEG = 3°` returns
+  `{ directWm2: 0, diffuseWm2: ghiWm2 }` directly without computing `kt`.
+  This prevents `kt` from inflating without bound near sunrise/sunset,
+  which previously could push an overcast low-GHI sample into the
+  `kt > 0.8` clear-sky branch and, one function downstream in
+  `poaIrradiance()`, amplify into a POA irradiance up to ~55x the input
+  GHI.
 - Reference test values in `decomposeGhi.test.ts` were generated by an
   independent Python transcription of the same equations (not by calling
   the TypeScript function under test), committed at
-  `src/solar-physics/__verification__/decomposeGhi_reference.py` with an
-  optional `--pvlib` cross-check mode — matching the cross-check rigor
-  used for `clearSkyIrradiance` (0011) and `sunPosition` (0010).
+  `src/solar-physics/__verification__/decomposeGhi_reference.py`. Running
+  it with `--pvlib` (last verified against pvlib 0.13.0) cross-checks the
+  Erbs polynomial coefficients and branch boundaries themselves against
+  upstream `pvlib.irradiance.erbs` — matching the cross-check rigor used
+  for `clearSkyIrradiance` (0011) and `sunPosition` (0010). This is not a
+  bit-for-bit match: pvlib's `erbs()` always derives its own `dni_extra`
+  (a different solar constant plus an eccentricity correction this model
+  omits), producing an expected ~-3.6% to +3.0% `kt` divergence unrelated
+  to the correlation itself — see the script's module doc for the exact
+  reasoning and numbers.
 
 ## Consequences
 

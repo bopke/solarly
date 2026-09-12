@@ -42,6 +42,17 @@
  * no Earth-Sun distance eccentricity correction on the extraterrestrial
  * irradiance used to compute `kt` — matches the same documented gap in
  * `clearSkyIrradiance` (ADR 0011), for the same reason (no date input).
+ *
+ * Low-sun guards (see docs/decisions/0014-ghi-decomposition-erbs.md):
+ * mirrors pvlib's `irradiance.erbs` `min_cos_zenith`/`max_zenith` guards.
+ * Without them, `kt = ghi / (I0 * cos(zenith))` is unbounded as
+ * `cos(zenith) -> 0` near sunrise/sunset, which can push an otherwise
+ * overcast sample into the `kt > 0.8` "mostly clear sky" branch — an error
+ * that then compounds when `poaIrradiance()` divides the resulting beam
+ * back by the same near-zero `cos(zenith)` to recover DNI. Below
+ * `MAX_ZENITH_DEG` (altitude < ~3°) this function returns all-diffuse
+ * output directly; above that threshold, `cos(zenith)` is floored at
+ * `MIN_COS_ZENITH` before dividing, exactly as pvlib does.
  */
 
 export interface GhiDecomposition {
@@ -65,6 +76,30 @@ export interface SunPositionInput {
  * vintage/justification note.
  */
 const SOLAR_CONSTANT_W_M2 = 1361
+
+/**
+ * Minimum `cos(zenith)` used when computing the clearness index `kt`,
+ * matching pvlib's `irradiance.erbs(..., min_cos_zenith=0.065)` default
+ * (equivalent to a sun altitude of ~3.73°). Without this floor, `kt`
+ * inflates without bound as the sun approaches the horizon, since `kt`'s
+ * denominator (`I0 * cos(zenith)`) approaches zero while its numerator
+ * (measured GHI) does not shrink at the same rate — see the module doc's
+ * "Low-sun guards" note.
+ */
+const MIN_COS_ZENITH = 0.065
+
+/**
+ * Sun altitude (degrees) below which this function returns all-diffuse
+ * output directly, matching pvlib's `irradiance.erbs(..., max_zenith=87)`
+ * default (zenith > 87° <=> altitude < 3°). Below this altitude, real-world
+ * (interval-averaged) GHI/altitude pairs are routinely physically
+ * inconsistent with an instantaneous clear-sky estimate at that altitude
+ * (see ADR 0014), so `kt` is not a reliable proxy for sky clarity even with
+ * `MIN_COS_ZENITH` applied — treating the sample as all-diffuse avoids
+ * manufacturing a large spurious beam component that `poaIrradiance()`
+ * would then amplify by dividing by the same near-zero `cos(zenith)`.
+ */
+const MIN_SUN_ALTITUDE_FOR_KT_DEG = 90 - 87
 
 function degToRad(deg: number): number {
   return (deg * Math.PI) / 180
@@ -113,7 +148,11 @@ function erbsDiffuseFraction(kt: number): number {
  *   "sun below/at the horizon" and returns zero for both components —
  *   consistent with `clearSkyIrradiance`'s and `poaIrradiance`'s
  *   below-horizon handling, and avoiding a division by a zero/negative
- *   `cos(zenith)` when computing the clearness index.
+ *   `cos(zenith)` when computing the clearness index. Altitude below
+ *   `MIN_SUN_ALTITUDE_FOR_KT_DEG` (~3°) but still above the horizon
+ *   returns `{ directWm2: 0, diffuseWm2: ghiWm2 }` (all-diffuse) rather
+ *   than computing `kt` at all — see the module doc's "Low-sun guards"
+ *   note.
  */
 export function decomposeGhi(
   ghiWm2: number,
@@ -130,11 +169,24 @@ export function decomposeGhi(
     return { directWm2: 0, diffuseWm2: 0 }
   }
 
-  const cosZenith = Math.sin(degToRad(sunAltitude))
+  // Very low sun altitude: mirror pvlib's `max_zenith=87` guard and treat
+  // the sample as all-diffuse rather than computing kt at all. At these
+  // altitudes, real-world (interval-averaged) GHI readings routinely
+  // exceed what an instantaneous clear-sky estimate at that altitude would
+  // produce (see ADR 0014), which would otherwise inflate kt into the
+  // clear-sky branch — see the module doc's "Low-sun guards" note.
+  if (sunAltitude < MIN_SUN_ALTITUDE_FOR_KT_DEG) {
+    return { directWm2: 0, diffuseWm2: ghiWm2 }
+  }
+
+  // Floor cos(zenith) before dividing, matching pvlib's
+  // `min_cos_zenith=0.065` guard, so kt can't inflate without bound as the
+  // sun approaches the horizon.
+  const cosZenith = Math.max(Math.sin(degToRad(sunAltitude)), MIN_COS_ZENITH)
   const extraterrestrialHorizontal = SOLAR_CONSTANT_W_M2 * cosZenith
 
-  // extraterrestrialHorizontal > 0 here since sunAltitude > 0 was checked
-  // above (cosZenith = sin(sunAltitude) > 0).
+  // extraterrestrialHorizontal > 0 here since cosZenith is floored at
+  // MIN_COS_ZENITH > 0.
   const kt = ghiWm2 / extraterrestrialHorizontal
 
   // Real-world GHI measurements can push kt slightly above the model's
