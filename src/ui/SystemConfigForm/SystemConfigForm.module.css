@@ -1,0 +1,42 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.select,
+.input {
+  font-size: 1rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+}
+
+.input[aria-invalid='true'] {
+  border-color: #c0392b;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+.error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #c0392b;
+}
