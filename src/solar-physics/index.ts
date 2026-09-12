@@ -9,3 +9,8 @@ export { poaIrradiance, DEFAULT_ALBEDO } from './poaIrradiance'
 export type { HorizontalIrradiance, SunPositionInput } from './poaIrradiance'
 export { panelPowerOutput, DEFAULT_NOCT_C } from './panelPowerOutput'
 export type { PanelSpec } from './panelPowerOutput'
+export { decomposeGhi } from './decomposeGhi'
+export type {
+  GhiDecomposition,
+  SunPositionInput as DecomposeGhiSunPositionInput,
+} from './decomposeGhi'
