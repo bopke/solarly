@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { MonthlyClimateNormal } from '../data-sources/index.ts'
-import { buildTmySimulationResult, REFERENCE_YEAR } from './runTmySimulation.ts'
+import {
+  buildTmySimulationResult,
+  MAX_CLEARNESS_FACTOR,
+  REFERENCE_YEAR,
+} from './runTmySimulation.ts'
 import type { SystemConfig } from './types.ts'
 
 /**
@@ -71,7 +75,7 @@ describe('buildTmySimulationResult', () => {
     expect(result.months.map((m) => m.month)).toEqual([6, 7, 12])
   })
 
-  it('each representative day has a 24-hour curve with zero power at night and positive power at midday', () => {
+  it('each representative day has a 24-hour curve in local solar time, with zero power at night and positive power at midday', () => {
     const result = buildTmySimulationResult(
       SUNNY_LOCATION,
       RESIDENTIAL_SYSTEM,
@@ -84,15 +88,70 @@ describe('buildTmySimulationResult', () => {
       Array.from({ length: 24 }, (_, i) => i),
     )
 
-    // Phoenix is UTC-7; local midnight-ish hours should have no sun.
-    const midnightUtc = june.representativeDayHourly.find((h) => h.hour === 7)!
-    expect(midnightUtc.powerW).toBe(0)
-    expect(midnightUtc.poaIrradianceWm2).toBe(0)
+    // `hour` is local solar time (see ADR 0040), so local midnight is
+    // hour 0 regardless of the location's actual UTC offset.
+    const midnight = june.representativeDayHourly.find((h) => h.hour === 0)!
+    expect(midnight.powerW).toBe(0)
+    expect(midnight.poaIrradianceWm2).toBe(0)
 
-    // Local early afternoon (~UTC 20:00 = 13:00 local) should be producing
-    // substantial power for an 8kW-rated array in a sunny location.
-    const middayUtc = june.representativeDayHourly.find((h) => h.hour === 20)!
-    expect(middayUtc.powerW).toBeGreaterThan(1000)
+    // Local solar noon (hour 12) should be producing substantial power for
+    // an 8kW-rated array in a sunny location.
+    const midday = june.representativeDayHourly.find((h) => h.hour === 12)!
+    expect(midday.powerW).toBeGreaterThan(1000)
+  })
+
+  it('centers the daily curve on local solar noon regardless of longitude (not raw UTC noon)', () => {
+    // Tokyo (lon +139.65, UTC+9) and Fiji (lon +178.44, near the date
+    // line) are both far enough from UTC that stepping the representative
+    // day in raw UTC hours would wrap/mis-center the curve (see ADR 0040
+    // and the PR review) — Tokyo's UTC-stepped peak would land near "hour
+    // 3", and Fiji's would split into two lobes across midnight UTC.
+    // Local-solar-time stepping should center both on hour 12 with a
+    // single contiguous nighttime block.
+    const TOKYO = { lat: 35.68, lon: 139.65 }
+    const tokyoResult = buildTmySimulationResult(TOKYO, RESIDENTIAL_SYSTEM, [
+      { month: 6, temperatureC: 24, dailyInsolationKWhM2: 4.5 },
+    ])
+    const tokyoJune = tokyoResult.months[0]
+    const tokyoPeak = tokyoJune.representativeDayHourly.reduce((a, b) =>
+      b.powerW > a.powerW ? b : a,
+    )
+    expect(tokyoPeak.hour).toBe(12)
+
+    const FIJI = { lat: -18.14, lon: 178.44 }
+    const fijiResult = buildTmySimulationResult(FIJI, RESIDENTIAL_SYSTEM, [
+      { month: 1, temperatureC: 27, dailyInsolationKWhM2: 6.0 },
+    ])
+    const fijiJan = fijiResult.months[0]
+    const fijiPeak = fijiJan.representativeDayHourly.reduce((a, b) =>
+      b.powerW > a.powerW ? b : a,
+    )
+    expect(fijiPeak.hour).toBe(12)
+
+    // Nighttime (zero-power) hours should form a single contiguous block
+    // that doesn't wrap around the array edges — a double-peaked/split
+    // curve would show zero-power hours both near the start and the end
+    // with non-zero power in between at both ends.
+    const isZero = (h: { powerW: number }) => h.powerW === 0
+    for (const hourly of [
+      tokyoJune.representativeDayHourly,
+      fijiJan.representativeDayHourly,
+    ]) {
+      const zeroIndices = hourly
+        .map((h, i) => (isZero(h) ? i : -1))
+        .filter((i) => i !== -1)
+      // A contiguous block (allowing wraparound would show a gap in the
+      // middle instead of at one end) has no "gap" once sorted — check
+      // that non-zero hours form one contiguous run instead.
+      const nonZeroIndices = hourly
+        .map((h, i) => (isZero(h) ? -1 : i))
+        .filter((i) => i !== -1)
+      expect(nonZeroIndices.length).toBeGreaterThan(0)
+      const first = nonZeroIndices[0]
+      const last = nonZeroIndices[nonZeroIndices.length - 1]
+      expect(last - first + 1).toBe(nonZeroIndices.length)
+      expect(zeroIndices.length + nonZeroIndices.length).toBe(24)
+    }
   })
 
   it('clamps the clearness factor into [0, 1.2]', () => {
@@ -120,6 +179,46 @@ describe('buildTmySimulationResult', () => {
       // below) simple clear-sky estimates for most of the year.
       expect(month.clearnessFactor).toBeGreaterThan(0.5)
     }
+  })
+
+  it('a genuinely clear month lands at/near a clearness factor of 1.0 rather than routinely hitting the clamp', () => {
+    // With the single-day-15 denominator, this fixture's Jan/Dec raw
+    // clearness factors were 1.2075/1.1996 — one clamped, one a hair
+    // below the clamp (see the PR review). With the month-averaged
+    // clear-sky denominator, both should land comfortably below the 1.2
+    // clamp, so the clamp is a rare safety net again, not routine
+    // truncation on this fixture.
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      SUNNY_LOCATION_NORMALS,
+    )
+
+    for (const month of result.months) {
+      expect(month.clearnessFactor).toBeLessThan(MAX_CLEARNESS_FACTOR)
+    }
+
+    // Pin the most diagnostic intermediate values (per the PR review) so a
+    // regression in `clearSkyIrradiance`/`sunPosition`/the denominator
+    // calculation is caught here rather than only surfacing as a change
+    // in the much-less-sensitive annual total.
+    const jan = result.months.find((m) => m.month === 1)!
+    const dec = result.months.find((m) => m.month === 12)!
+    expect(jan.clearnessFactor).toBeCloseTo(1.18, 1)
+    expect(dec.clearnessFactor).toBeCloseTo(1.18, 1)
+  })
+
+  it('still clamps the clearness factor as a rare safety net for a genuinely implausible climate normal', () => {
+    // A climate normal claiming far more insolation than even clear skies
+    // could plausibly deliver (e.g. bad input data) should still hit the
+    // upper clamp — the fix to the denominator shouldn't remove the
+    // safety net entirely, just stop it from triggering routinely.
+    const result = buildTmySimulationResult(
+      SUNNY_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      [{ month: 6, temperatureC: 32, dailyInsolationKWhM2: 20 }],
+    )
+    expect(result.months[0].clearnessFactor).toBe(MAX_CLEARNESS_FACTOR)
   })
 
   it('computes monthlyTotalKWh as representativeDayTotalKWh * daysInMonth, and February has 28 days in the reference year', () => {
@@ -163,13 +262,19 @@ describe('buildTmySimulationResult', () => {
 
     // Real-world reference: a well-sited ~8kW residential system in a
     // sunny US location like Phoenix typically produces somewhere around
-    // 12,000-16,000 kWh/year (roughly 1,500-2,000 kWh per installed kW,
-    // a commonly cited PVWatts-style capacity-factor range for
-    // high-insolation sites). Assert a generous but meaningful band
-    // around that so a badly broken pipeline (e.g. an order-of-magnitude
-    // unit error) fails the test.
-    expect(result.annualTotalKWh).toBeGreaterThan(8000)
-    expect(result.annualTotalKWh).toBeLessThan(20000)
+    // 1,500-2,200 kWh per installed kWp (a PVWatts-style capacity-factor
+    // range for high-insolation sites — PVWatts itself lands closer to
+    // ~1,700-1,800 kWh/kWp for a comparable Phoenix system once inverter
+    // efficiency and a diurnal temperature curve are modeled, neither of
+    // which this simplified pipeline does yet — see ADR 0040's "known,
+    // one-directional bias" notes). The previous band here (1,000-2,500
+    // kWh/kWp) was wide enough to pass an order-of-magnitude bug and
+    // nothing else (per the PR review); this tighter band still allows
+    // for the model's documented simplifications while catching a real
+    // regression in the disaggregation or clear-sky pipeline.
+    const kWhPerKWp = result.annualTotalKWh / 8 // 20 panels * 400W = 8kWp
+    expect(kWhPerKWp).toBeGreaterThan(1500)
+    expect(kWhPerKWp).toBeLessThan(2200)
   })
 
   it('applies manual shading as an additional derate on top of system losses', () => {
@@ -241,5 +346,51 @@ describe('buildTmySimulationResult', () => {
     const june = result.months.find((m) => m.month === 6)!
     const december = result.months.find((m) => m.month === 12)!
     expect(june.monthlyTotalKWh).toBeGreaterThan(december.monthlyTotalKWh)
+  })
+
+  it('does not silently zero out a high-latitude winter month even when day 15 has no daylight at all', () => {
+    // At lat >= ~67, day 15 of a winter month can itself be a polar-night
+    // day with zero clear-sky insolation, which used to force the whole
+    // month's clearness factor (and therefore its real, measured
+    // insolation) to be silently discarded as 0 — see the PR review's
+    // Issue 3. Tromsø-ish latitude/longitude, December, with a small but
+    // real NASA-POWER-style measured insolation.
+    const HIGH_LATITUDE_WINTER_LOCATION = { lat: 68, lon: 20 }
+    const result = buildTmySimulationResult(
+      HIGH_LATITUDE_WINTER_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      [{ month: 12, temperatureC: -10, dailyInsolationKWhM2: 0.2 }],
+    )
+
+    const december = result.months[0]
+    expect(Number.isFinite(december.clearnessFactor)).toBe(true)
+    expect(Number.isFinite(december.monthlyTotalKWh)).toBe(true)
+    // The month has some real measured insolation, so it should produce
+    // *some* non-zero output — not be silently zeroed by a degenerate
+    // day-15 denominator/shape.
+    expect(december.monthlyTotalKWh).toBeGreaterThan(0)
+  })
+
+  it('reports a genuine near-zero (not NaN/Infinity) for a month with truly no daylight all month', () => {
+    // Distinguish "the month genuinely has ~no sun at all" (a real
+    // physical near-zero) from a division-by-zero artifact: deep polar
+    // night (lat 85) in December, with an essentially-zero measured
+    // insolation to match.
+    const TRUE_POLAR_NIGHT_LOCATION = { lat: 85, lon: 10 }
+    const result = buildTmySimulationResult(
+      TRUE_POLAR_NIGHT_LOCATION,
+      RESIDENTIAL_SYSTEM,
+      [{ month: 12, temperatureC: -20, dailyInsolationKWhM2: 0.01 }],
+    )
+
+    const december = result.months[0]
+    expect(Number.isFinite(december.clearnessFactor)).toBe(true)
+    expect(Number.isFinite(december.monthlyTotalKWh)).toBe(true)
+    expect(december.clearnessFactor).toBe(0)
+    expect(december.monthlyTotalKWh).toBe(0)
+    for (const hour of december.representativeDayHourly) {
+      expect(Number.isFinite(hour.powerW)).toBe(true)
+      expect(Number.isFinite(hour.poaIrradianceWm2)).toBe(true)
+    }
   })
 })
