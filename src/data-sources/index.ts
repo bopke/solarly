@@ -1,4 +1,4 @@
-export type { HourlyClimate } from './types.ts'
+export type { HourlyClimate, MonthlyClimateNormal } from './types.ts'
 export {
   fetchNasaPowerClimateNormals,
   type FetchNasaPowerClimateNormalsParams,
