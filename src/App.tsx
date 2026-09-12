@@ -1,25 +1,83 @@
 import { useState } from 'react'
-import { AppShell, DailyChart } from './ui'
-import type { TmySimulationResult } from './simulation'
+import {
+  AppShell,
+  DailyChart,
+  ForecastChart,
+  Heatmap,
+  LocationPicker,
+  MonthlyChartTab,
+  SystemConfigForm,
+  type Mode,
+  type ResolvedLocation,
+  type SystemConfig as UiSystemConfig,
+  type TabId,
+} from './ui'
+import {
+  runLiveSimulation,
+  runTmySimulation,
+  type SimulationResult,
+} from './simulation'
 
 function App() {
-  // Real location state arrives with the location-picker issue; a local
-  // placeholder is enough for the shell to demonstrate its empty state.
-  const [hasLocation] = useState(false)
-  // Real simulation results arrive once the location picker (#12), system
-  // config form (#13), and an update-trigger wire-up land and call
-  // `runTmySimulation` here. Until then this stays `undefined`, so
-  // `DailyChart` renders via its own empty-state (its slot is only ever
-  // consulted once `hasLocation` is true anyway — see `MainArea`'s panel
-  // priority order).
-  const [simulationResult] = useState<TmySimulationResult | undefined>(
+  const [location, setLocation] = useState<ResolvedLocation | undefined>(
     undefined,
   )
+  const [systemConfig, setSystemConfig] = useState<UiSystemConfig | undefined>(
+    undefined,
+  )
+  const [isSystemConfigValid, setIsSystemConfigValid] = useState(false)
+  const [simulationResult, setSimulationResult] = useState<
+    SimulationResult | undefined
+  >(undefined)
+  const [isLoading, setIsLoading] = useState(false)
+
+  function handleUpdate({ mode }: { mode: Mode; activeTab: TabId }) {
+    if (!location || !systemConfig || !isSystemConfigValid) {
+      return
+    }
+
+    setIsLoading(true)
+
+    const run =
+      mode === 'tmy'
+        ? runTmySimulation({ location, systemConfig })
+        : runLiveSimulation({ location, systemConfig })
+
+    // Error-state UI is out of scope for this issue (see #18) — an
+    // unhandled rejection is an acceptable, if rough, failure mode for
+    // now. `isLoading` is still reset on failure so the shell doesn't get
+    // stuck in a permanent loading state.
+    run
+      .then((result) => setSimulationResult(result))
+      .finally(() => setIsLoading(false))
+  }
+
+  const tmyResult =
+    simulationResult?.mode === 'tmy' ? simulationResult : undefined
+  const liveResult =
+    simulationResult?.mode === 'live' ? simulationResult : undefined
 
   return (
     <AppShell
-      hasLocation={hasLocation}
-      tabContent={{ daily: <DailyChart result={simulationResult} /> }}
+      hasLocation={location !== undefined}
+      isLoading={isLoading}
+      onUpdate={handleUpdate}
+      updateDisabled={!location || !isSystemConfigValid}
+      locationSlot={<LocationPicker onLocationChange={setLocation} />}
+      systemConfigSlot={
+        <SystemConfigForm
+          onChange={(config, isValid) => {
+            setSystemConfig(config)
+            setIsSystemConfigValid(isValid)
+          }}
+        />
+      }
+      tabContent={{
+        daily: <DailyChart result={tmyResult} />,
+        monthly: <MonthlyChartTab result={tmyResult} />,
+        heatmap: <Heatmap result={tmyResult} />,
+        forecast: <ForecastChart result={liveResult} />,
+      }}
     />
   )
 }
