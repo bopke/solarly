@@ -8,8 +8,14 @@ reconstruct the reasoning from git history.
 ## Convention
 
 - File name: `docs/decisions/NNNN-title.md`, where `NNNN` is a four-digit,
-  zero-padded, sequential number (`0001`, `0002`, ...) and `title` is a
-  short kebab-case summary.
+  zero-padded number and `title` is a short kebab-case summary. Numbers
+  must be unique but do **not** need to be contiguous: during parallel
+  development, separate workstreams may reserve number blocks (e.g. the
+  0010s, 0020s, 0030s, ...) so that ADRs written concurrently on
+  different branches don't collide when merged. Gaps between numbers are
+  expected and fine — pick any unused number in your workstream's block
+  when writing a new ADR, and don't renumber existing ADRs on merge just
+  to remove gaps.
 - Each file uses this structure:
 
   ```markdown

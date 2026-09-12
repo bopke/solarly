@@ -34,13 +34,28 @@ describe('PANEL_PRESETS', () => {
 
       // Rated power: realistic range for single residential/commercial
       // modules currently on the market.
-      expect(preset.ratedWattsPeak).toBeGreaterThan(0)
       expect(preset.ratedWattsPeak).toBeGreaterThanOrEqual(250)
       expect(preset.ratedWattsPeak).toBeLessThanOrEqual(750)
 
+      expect(preset.id.length).toBeGreaterThan(0)
       expect(preset.make.length).toBeGreaterThan(0)
       expect(preset.model.length).toBeGreaterThan(0)
       expect(preset.notes.length).toBeGreaterThan(0)
+    },
+  )
+
+  it.each(PANEL_PRESETS)(
+    '$id rated wattage is consistent with efficiency x area (catches model/spec mismatches)',
+    (preset) => {
+      // ratedWattsPeak should equal roughly efficiencyPercent/100 * areaM2 *
+      // 1000. This is the cross-check that catches a real model code paired
+      // with a wattage/efficiency combination that doesn't match its actual
+      // physical size (e.g. a wattage that belongs to a different SKU).
+      // Real STC ratings carry measurement tolerance, so allow ~5%.
+      const impliedWatts =
+        (preset.efficiencyPercent / 100) * preset.areaM2 * 1000
+      expect(preset.ratedWattsPeak).toBeGreaterThanOrEqual(impliedWatts * 0.95)
+      expect(preset.ratedWattsPeak).toBeLessThanOrEqual(impliedWatts * 1.05)
     },
   )
 

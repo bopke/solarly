@@ -31,7 +31,9 @@ Two things needed a concrete decision:
   grouping/labeling generic entries differently using the flag.
 - Fields: `id` (stable key for `<select>` values), `make`, `model`,
   `ratedWattsPeak`, `efficiencyPercent`, `tempCoefficientPercentPerC`,
-  `isGeneric`, and a free-text `notes` field for context (panel
+  `areaM2` (approximate module area, used only as an internal
+  cross-check against `ratedWattsPeak` and `efficiencyPercent` — see
+  below), `isGeneric`, and a free-text `notes` field for context (panel
   technology, typical use case) that's useful for a human picking a
   preset but not load-bearing for the physics pipeline.
 - Generic entries use `make: 'Generic'` and are also flagged via
@@ -48,15 +50,18 @@ Two things needed a concrete decision:
   revisions over time are expected and acceptable, since the form always
   leaves every field editable after a preset is chosen (per the design
   doc).
-- No dependency on any other module (`src/panel-presets/index.ts` only
-  imports from `vitest` in its test file); the dataset can be consumed
+- No dependency on any other module (the module imports nothing; its
+  test file imports only `vitest`); the dataset can be consumed
   standalone by the `ui` system-config form.
 
 ## Consequences
 
 - Adding, removing, or re-numbering presets later is a small, isolated
-  diff to one file, and the test suite already enforces plausible value
-  ranges so a bad copy-paste from a datasheet is caught early.
+  diff to one file. The test suite enforces plausible per-field value
+  ranges and, via a cross-check between `ratedWattsPeak`,
+  `efficiencyPercent`, and `areaM2`, catches a real-but-implausible
+  model/spec combination (e.g. a wattage that doesn't match the named
+  module's actual area) — not just an out-of-range decimal slip.
 - Because this is a point-in-time snapshot of published specs rather
   than a live-synced catalog, someone will eventually need to refresh
   the real-model numbers (new module generations supersede these); this
