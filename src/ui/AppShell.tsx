@@ -90,7 +90,17 @@ export function AppShell({
   )
 
   const mode = controlledMode ?? uncontrolledMode
-  const activeTab = controlledActiveTab ?? uncontrolledActiveTab
+  const requestedTab = controlledActiveTab ?? uncontrolledActiveTab
+
+  // Derive the effective tab in render rather than patching it reactively
+  // inside handleModeChange: mode can change via routes other than the
+  // toggle (e.g. a parent driving the controlled `mode` prop directly for
+  // URL persistence, with `activeTab` left uncontrolled), and a handler-only
+  // fix never runs for those. Deriving here self-heals for every path.
+  const availableTabsForMode = TABS_BY_MODE[mode]
+  const activeTab = availableTabsForMode.includes(requestedTab)
+    ? requestedTab
+    : availableTabsForMode[0]
 
   function setActiveTab(nextTab: TabId) {
     if (controlledActiveTab === undefined) {
@@ -105,8 +115,12 @@ export function AppShell({
     }
     onModeChange?.(nextMode)
 
-    // Keep activeTab valid: reset to the first tab available in the new
-    // mode whenever the current tab wouldn't be visible there.
+    // Not required for correctness anymore (activeTab is derived in render
+    // above, so it self-heals for this and every other route mode can
+    // change through), but explicitly resetting here keeps the in-shell
+    // toggle's own behavior unchanged: switching modes via the toggle
+    // still forgets a tab that's no longer valid rather than "remembering"
+    // it for if the user switches back.
     const availableTabs = TABS_BY_MODE[nextMode]
     if (!availableTabs.includes(activeTab)) {
       setActiveTab(availableTabs[0])

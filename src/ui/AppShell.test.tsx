@@ -256,5 +256,41 @@ describe('AppShell', () => {
         'true',
       )
     })
+
+    it('self-corrects when a controlled mode is changed externally, leaving activeTab uncontrolled and invalid for the new mode', () => {
+      // Mirrors the URL-persistence pattern: parent controls `mode` (e.g.
+      // via a router/back-button) but leaves `activeTab` uncontrolled. If
+      // `mode` changes via any route other than the in-shell toggle (here,
+      // a rerender with a new `mode` prop), the shell must still land on a
+      // tab that's valid for the new mode.
+      const { rerender } = render(<AppShell hasLocation mode="tmy" />)
+
+      // Pick "Monthly" while still in tmy mode, so activeTab is left
+      // pointing at a tab that doesn't exist in live mode.
+      fireEvent.click(screen.getByRole('tab', { name: 'Monthly' }))
+      expect(screen.getByRole('tab', { name: 'Monthly' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      )
+
+      // Parent flips `mode` directly (not via ModeToggle) with activeTab
+      // still uncontrolled and stuck at 'monthly'.
+      rerender(<AppShell hasLocation mode="live" />)
+
+      const forecastTab = screen.getByRole('tab', { name: 'Forecast' })
+      expect(forecastTab).toHaveAttribute('aria-selected', 'true')
+      expect(forecastTab).toHaveAttribute('tabIndex', '0')
+
+      // The tablist must stay keyboard-reachable: some tab has tabIndex 0.
+      const tabs = screen.getAllByRole('tab')
+      expect(tabs.some((tab) => tab.getAttribute('tabIndex') === '0')).toBe(
+        true,
+      )
+
+      // The panel and its aria-labelledby must agree with the selected tab.
+      const panel = screen.getByRole('tabpanel')
+      const labelledBy = panel.getAttribute('aria-labelledby')
+      expect(labelledBy).toBe(forecastTab.id)
+    })
   })
 })
