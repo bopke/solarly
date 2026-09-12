@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AppShell, DailyChart } from './ui'
-import type { SimulationResult } from './simulation'
+import type { TmySimulationResult } from './simulation'
 
 function App() {
   // Real location state arrives with the location-picker issue; a local
@@ -12,7 +12,9 @@ function App() {
   // `DailyChart` renders via its own empty-state (its slot is only ever
   // consulted once `hasLocation` is true anyway — see `MainArea`'s panel
   // priority order).
-  const [simulationResult] = useState<SimulationResult | undefined>(undefined)
+  const [simulationResult] = useState<TmySimulationResult | undefined>(
+    undefined,
+  )
 
   return (
     <AppShell
