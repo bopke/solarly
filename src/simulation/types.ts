@@ -51,7 +51,7 @@ export interface SystemConfig {
 
 /** One hour of a representative day's simulated output. */
 export interface HourlyPoint {
-  /** Hour of day, 0-23 (UTC — see the ADR's note on the representative-day convention). */
+  /** Hour of day, 0-23, in local solar time (approximated as a longitude offset from UTC — see the ADR's note on the representative-day convention). */
   hour: number
   /** Plane-of-array irradiance for this hour, in W/m². */
   poaIrradianceWm2: number
