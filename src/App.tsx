@@ -108,9 +108,20 @@ function App() {
   // actively misleading. See PR #43 review finding #1. Any pending
   // simulation error is stale for the same reason — it describes a fetch
   // for inputs that no longer apply.
+  //
+  // Also bumps `latestRequestId`, invalidating any run still in flight
+  // from before this change: without this, a `handleUpdate` started
+  // against the old inputs would still pass the `requestId !==
+  // latestRequestId.current` guard when it eventually settles, so its
+  // stale success/error could land on screen attributed to inputs the
+  // user never actually ran (see PR #48 review). Clearing `isLoading`
+  // too, since the stale run's own `.finally()` is now guarded off and
+  // would otherwise never reset it.
   function clearStaleResults() {
+    latestRequestId.current += 1
     setResults(EMPTY_RESULTS)
     setSimulationError(undefined)
+    setIsLoading(false)
   }
 
   function handleUpdate(runMode: Mode) {
