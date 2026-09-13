@@ -346,9 +346,15 @@ export function LocationPicker({
   const searchBoxClassName = isHero
     ? `${styles.searchBox} ${styles.searchBoxHero}`
     : styles.searchBox
-  const mapContainerClassName = isHero
-    ? `${styles.mapContainer} ${styles.mapContainerHero}`
-    : styles.mapContainer
+  // Deliberately NOT toggled on `isHero`: this is the exact DOM node
+  // MapLibre is constructed against (`new MapLibreMap({ container })`
+  // below), and MapLibre adds its own `maplibregl-map` class to it
+  // imperatively. React rewrites the whole `class` attribute whenever
+  // `className` changes, so making this conditional would wipe out
+  // MapLibre's class (and the `position: relative` it provides for the
+  // canvas) on every hero/compact toggle. Hero sizing for the map is
+  // instead driven from the `.mapWrapperHero` ancestor class above, which
+  // MapLibre never touches — see LocationPicker.module.css.
 
   return (
     <div className={containerClassName}>
@@ -425,7 +431,7 @@ export function LocationPicker({
 
         <div
           ref={mapContainerRef}
-          className={mapContainerClassName}
+          className={styles.mapContainer}
           data-testid="location-picker-map"
           aria-label="Map for selecting a location"
         />
