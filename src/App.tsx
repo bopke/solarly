@@ -20,6 +20,8 @@ import {
   type TmySimulationResult,
 } from './simulation'
 import { NasaPowerNoDataError } from './data-sources'
+import { SceneEditorFlow, type SceneDesignState } from './scene/flow'
+import styles from './App.module.css'
 
 /**
  * Adapts `SystemConfigForm`'s single-array UI config into the simulation
@@ -118,6 +120,21 @@ function App() {
   // `onUpdate` fires.
   const [mode, setMode] = useState<Mode>('tmy')
 
+  // The M2 "Design in 3D" scene editor overlay (issue #60). `isSceneOpen`
+  // only controls whether the overlay is *visible* — `SceneEditorFlow`
+  // stays mounted regardless (see its own doc comment), so closing it and
+  // reopening via "Edit scene" never loses traced shapes, per-shape
+  // config, or placed obstructions from an earlier session. `sceneState`
+  // mirrors the overlay's aggregated state (via `onStateChange`) purely so
+  // the sidebar can render a compact summary/button label without
+  // reaching into the overlay component itself; it is not fed back into
+  // `SceneEditorFlow` as a prop.
+  const [isSceneOpen, setIsSceneOpen] = useState(false)
+  const [sceneState, setSceneState] = useState<SceneDesignState | undefined>(
+    undefined,
+  )
+  const hasScene = (sceneState?.tracedShapes.length ?? 0) > 0
+
   // Identifies the most recently started `handleUpdate` run. A response is
   // only applied if its request is still the latest one when it resolves —
   // otherwise a slower, now-stale in-flight request (e.g. Update clicked,
@@ -196,50 +213,89 @@ function App() {
     simulationError?.mode === mode ? simulationError : undefined
 
   return (
-    <AppShell
-      hasLocation={location !== undefined}
-      isLoading={isLoading}
-      error={
-        activeSimulationError && (
-          <SimulationErrorBanner
-            message={activeSimulationError.message}
-            onRetry={
-              activeSimulationError.retryable
-                ? () => handleUpdate(mode)
-                : undefined
-            }
+    <>
+      <AppShell
+        hasLocation={location !== undefined}
+        isLoading={isLoading}
+        error={
+          activeSimulationError && (
+            <SimulationErrorBanner
+              message={activeSimulationError.message}
+              onRetry={
+                activeSimulationError.retryable
+                  ? () => handleUpdate(mode)
+                  : undefined
+              }
+            />
+          )
+        }
+        onUpdate={({ mode: updateMode }) => handleUpdate(updateMode)}
+        updateDisabled={!location || !isSystemConfigValid}
+        mode={mode}
+        onModeChange={setMode}
+        locationSlot={
+          <LocationPicker
+            isHero={location === undefined}
+            onLocationChange={(loc) => {
+              setLocation(loc)
+              clearStaleResults()
+            }}
           />
-        )
-      }
-      onUpdate={({ mode: updateMode }) => handleUpdate(updateMode)}
-      updateDisabled={!location || !isSystemConfigValid}
-      mode={mode}
-      onModeChange={setMode}
-      locationSlot={
-        <LocationPicker
-          isHero={location === undefined}
-          onLocationChange={(loc) => {
-            setLocation(loc)
-            clearStaleResults()
+        }
+        systemConfigSlot={
+          <>
+            <SystemConfigForm
+              onChange={(config, isValid) => {
+                setSystemConfig(config)
+                setIsSystemConfigValid(isValid)
+                clearStaleResults()
+              }}
+            />
+            <div className={styles.sceneSection}>
+              <button
+                type="button"
+                className={styles.sceneButton}
+                disabled={!location}
+                onClick={() => setIsSceneOpen(true)}
+              >
+                {hasScene ? 'Edit scene' : 'Design in 3D'}
+              </button>
+              {hasScene && (
+                <p className={styles.sceneSummary}>
+                  {sceneState?.tracedShapes.length} shape
+                  {sceneState?.tracedShapes.length === 1 ? '' : 's'} traced
+                  {sceneState && sceneState.obstructions.length > 0
+                    ? `, ${sceneState.obstructions.length} obstruction${
+                        sceneState.obstructions.length === 1 ? '' : 's'
+                      }`
+                    : ''}
+                </p>
+              )}
+            </div>
+          </>
+        }
+        tabContent={{
+          daily: <DailyChart result={results.tmy} />,
+          monthly: <MonthlyChartTab result={results.tmy} />,
+          heatmap: <Heatmap result={results.tmy} />,
+          forecast: <ForecastChart result={results.live} />,
+        }}
+      />
+      {location && (
+        <SceneEditorFlow
+          open={isSceneOpen}
+          location={location}
+          onClose={() => setIsSceneOpen(false)}
+          onStateChange={setSceneState}
+          onApply={() => {
+            // Real Apply logic (deriving the multi-array SystemConfig and
+            // feeding it into the simulation) is issue #61 — this shell
+            // just closes the overlay for now.
+            setIsSceneOpen(false)
           }}
         />
-      }
-      systemConfigSlot={
-        <SystemConfigForm
-          onChange={(config, isValid) => {
-            setSystemConfig(config)
-            setIsSystemConfigValid(isValid)
-            clearStaleResults()
-          }}
-        />
-      }
-      tabContent={{
-        daily: <DailyChart result={results.tmy} />,
-        monthly: <MonthlyChartTab result={results.tmy} />,
-        heatmap: <Heatmap result={results.tmy} />,
-        forecast: <ForecastChart result={results.live} />,
-      }}
-    />
+      )}
+    </>
   )
 }
 

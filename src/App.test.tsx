@@ -58,6 +58,32 @@ vi.mock('maplibre-gl', () => ({
 }))
 vi.mock('maplibre-gl/dist/maplibre-gl.css', () => ({}))
 
+// `SceneEditorFlow` (issue #60) pulls in MapLibre + mapbox-gl-draw
+// (tracing) and R3F/drei (3D scene) — all real-GPU/WebGL dependencies
+// that jsdom can't run, and that already get their own dedicated mocks in
+// `src/scene/tracing/SceneTracing.test.tsx`,
+// `src/scene/scene/Scene3DView.test.tsx`, and
+// `src/scene/flow/SceneEditorFlow.test.tsx`. This file's job is only
+// `App`'s own wiring — the entry-point button's location-gating, opening
+// the overlay, and the compact "N shapes" summary reflecting
+// `onStateChange` — so `SceneEditorFlow` itself is stubbed out here.
+vi.mock('./scene/flow', () => ({
+  SceneEditorFlow: ({
+    open,
+    location,
+    onClose,
+  }: {
+    open: boolean
+    location: { lat: number; lon: number }
+    onClose: () => void
+  }) =>
+    open ? (
+      <div data-testid="scene-editor-flow" data-lat={location.lat}>
+        <button onClick={onClose}>close-scene</button>
+      </div>
+    ) : null,
+}))
+
 const runTmySimulation = vi.fn()
 const runLiveSimulation = vi.fn()
 vi.mock('./simulation', async () => {
@@ -327,6 +353,44 @@ describe('App', () => {
       expect(
         screen.queryByText(/couldn't reach the climate service/i),
       ).not.toBeInTheDocument()
+    })
+  })
+
+  describe('"Design in 3D" entry point and overlay (issue #60)', () => {
+    it('disables the entry point until a location is set, then enables it', () => {
+      render(<App />)
+      expect(
+        screen.getByRole('button', { name: 'Design in 3D' }),
+      ).toBeDisabled()
+
+      setLocationViaMapClick()
+
+      expect(screen.getByRole('button', { name: 'Design in 3D' })).toBeEnabled()
+    })
+
+    it('opens the overlay, passing the resolved location through', () => {
+      render(<App />)
+      setLocationViaMapClick()
+
+      expect(screen.queryByTestId('scene-editor-flow')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+
+      const overlay = screen.getByTestId('scene-editor-flow')
+      expect(overlay).toBeInTheDocument()
+      expect(overlay).toHaveAttribute('data-lat', '48.8566')
+    })
+
+    it('closes the overlay via onClose, and reopening still shows "Design in 3D" (no scene applied yet)', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+      fireEvent.click(screen.getByRole('button', { name: 'close-scene' }))
+
+      expect(screen.queryByTestId('scene-editor-flow')).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Design in 3D' }),
+      ).toBeInTheDocument()
     })
   })
 })

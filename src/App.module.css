@@ -1,0 +1,26 @@
+.sceneSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.sceneButton {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--shell-border, #e7e2d6);
+  background: var(--shell-surface, #fff);
+  color: var(--shell-text, #1c1917);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.sceneButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sceneSummary {
+  font-size: 0.85rem;
+  color: var(--shell-muted, #78716c);
+}
