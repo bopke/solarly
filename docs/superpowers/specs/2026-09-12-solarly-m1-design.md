@@ -9,10 +9,12 @@ This document scopes **M1**: the generation-estimation engine and its chart UI, 
 ## Roadmap context (not part of this spec)
 
 - **M1** (this doc): core solar-physics engine + chart UI, manual system inputs, no 3D.
-- **M2** (future spec): 3D scene editor — place a plot of land, panel arrays, and obstructions (trees, buildings) in 3D; camera/scene interaction only, generation numbers still come from M1's manual inputs.
+- **M2**: 3D scene editor — place a plot of land, panel arrays, and obstructions (trees, buildings) in 3D. **Superseded by [docs/superpowers/specs/2026-09-13-solarly-m2-design.md](2026-09-13-solarly-m2-design.md)**, written once M1 shipped: the actual M2 scope grew from "camera/scene interaction only" to also deriving a multi-array `SystemConfig` from the traced scene, since a 3D scene naturally implies panels across multiple differently-oriented roof faces or zones — see that doc for the full design and reasoning.
 - **M3** (future spec): wire M2's scene geometry into the M1 engine — replace the manual shading input with real geometric shadow-casting (raycasting sun position against scene geometry, per hour/day).
+- **M4** (future spec): financial/ROI — system cost, local electricity price, payback period, degradation-adjusted lifetime generation projection. Sequenced after M3 rather than directly after M1, since ROI numbers are only as trustworthy as the generation estimate underneath them.
+- **M5** (backlog, unsequenced): P50/P90 year-to-year variability bands, save/export a scenario, battery storage modeling, and smaller items (browser geolocation, unit toggle, inverter DC/AC clipping).
 
-Financial/ROI calculations (system cost, electricity price, payback period) are explicitly out of scope for M1 and any milestone in this document; they will be a separate future milestone once generation numbers are trustworthy.
+Financial/ROI calculations (system cost, electricity price, payback period) are explicitly out of scope for M1 and M2; see M4 above.
 
 ## Architecture
 
