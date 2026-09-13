@@ -152,8 +152,8 @@ vi.mock('../scene', () => ({
 
 // Imported after the mocks above so the mocked modules are in place.
 import { SceneEditorFlow } from './SceneEditorFlow'
+import type { SceneApplyResult } from './SceneEditorFlow'
 import type { SceneDesignState } from './types'
-import type { SystemConfig } from '../../simulation'
 
 const LOCATION = { lat: 52.5, lon: 13.4 }
 
@@ -161,7 +161,7 @@ function Harness({
   onApply,
   onStateChange,
 }: {
-  onApply?: (config: SystemConfig) => void
+  onApply?: (result: SceneApplyResult) => void
   onStateChange?: (state: SceneDesignState) => void
 }): ReactNode {
   return (
@@ -256,7 +256,8 @@ describe('SceneEditorFlow', () => {
     expect(screen.getByText(/12 panels/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    const config = onApply.mock.calls[0][0] as SystemConfig
+    const { systemConfig: config } = onApply.mock
+      .calls[0][0] as SceneApplyResult
     expect(config.arrays).toHaveLength(1)
     expect(config.arrays[0].panelCount).toBe(12)
   })
@@ -276,7 +277,8 @@ describe('SceneEditorFlow', () => {
     await user.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(onApply).toHaveBeenCalledTimes(1)
-    const config = onApply.mock.calls[0][0] as SystemConfig
+    const { systemConfig: config, sceneGeometry } = onApply.mock
+      .calls[0][0] as SceneApplyResult
     expect(config.arrays).toEqual([
       {
         tiltDeg: 25,
@@ -286,10 +288,20 @@ describe('SceneEditorFlow', () => {
         efficiencyPercent: 20,
         tempCoefficientPercentPerC: -0.35,
         manualShadingPercent: 0,
+        shapeId: 'shape-1',
       },
     ])
     // Defaults to the same "System losses" default as `SystemConfigForm`.
     expect(config.systemLossesPercent).toBe(14)
+
+    // Issue #78: `SceneGeometry` is derived from the same aggregated state
+    // and passed out alongside `systemConfig`, correlated via `shapeId`.
+    expect(sceneGeometry.shapes.map((s) => s.id)).toEqual(['shape-1'])
+    expect(sceneGeometry.obstructions).toHaveLength(1)
+    expect(sceneGeometry.panels.every((p) => p.shapeId === 'shape-1')).toBe(
+      true,
+    )
+    expect(sceneGeometry.panels).toHaveLength(0)
   })
 
   it('uses the supplied panelPreset (rather than the default) to fill the derived arrays', async () => {
@@ -325,7 +337,8 @@ describe('SceneEditorFlow', () => {
     await user.click(screen.getByRole('button', { name: 'Next' }))
     await user.click(screen.getByRole('button', { name: 'Apply' }))
 
-    const config = onApply.mock.calls[0][0] as SystemConfig
+    const { systemConfig: config } = onApply.mock
+      .calls[0][0] as SceneApplyResult
     expect(config.arrays[0]).toMatchObject({
       wattsPerPanel: 500,
       efficiencyPercent: 22,
@@ -349,7 +362,8 @@ describe('SceneEditorFlow', () => {
     await user.type(lossesInput, '9')
 
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    const config = onApply.mock.calls[0][0] as SystemConfig
+    const { systemConfig: config } = onApply.mock
+      .calls[0][0] as SceneApplyResult
     expect(config.systemLossesPercent).toBe(9)
   })
 

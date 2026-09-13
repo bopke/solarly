@@ -351,9 +351,17 @@ function simulateMonth(
       )
 
       const geometry = arrayScenePanels.get(array)
+      // When real scene geometry is driving this array's occlusion, M3's
+      // whole point is to REPLACE the user-estimated `manualShadingPercent`
+      // derate with the real computed one — not stack the two, which would
+      // silently double-shade the array (harmless while the scene-editor
+      // path always produced 0, but no longer once #78 wired this up live —
+      // see PR #82 review). Zeroed only for a `geometry`-resolved array;
+      // the non-occlusion fallback below still applies the array's own
+      // `manualShadingPercent` exactly as before.
       const lossesPercent = combinedLossesPercent(
         systemConfig.systemLossesPercent,
-        array.manualShadingPercent,
+        geometry ? 0 : array.manualShadingPercent,
       )
       const powerW =
         geometry && sunDirection

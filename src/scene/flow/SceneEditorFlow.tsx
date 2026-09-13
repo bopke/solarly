@@ -6,9 +6,12 @@ import type { ShapeConfig } from '../configure'
 import { Scene3DView } from '../scene'
 import type { Obstruction, Scene3DShape, ShapePanelLayout } from '../scene'
 import { polygonToExtrusionGeometry, type PanelDimensions } from '../derive'
-import { deriveSystemConfigFromScene } from '../apply'
+import {
+  deriveSceneGeometryFromScene,
+  deriveSystemConfigFromScene,
+} from '../apply'
 import { PANEL_PRESETS, type PanelPreset } from '../../panel-presets'
-import type { SystemConfig } from '../../simulation'
+import type { SceneGeometry, SystemConfig } from '../../simulation'
 import type { SceneDesignState, SceneFlowLocation } from './types'
 import styles from './SceneEditorFlow.module.css'
 
@@ -95,6 +98,22 @@ function validateSystemLossesPercent(rawValue: string): string | null {
   return null
 }
 
+/**
+ * Payload handed to `onApply` (issue #78): the multi-array `SystemConfig`
+ * (issue #61's `deriveSystemConfigFromScene`, unchanged) alongside the
+ * `SceneGeometry` derived from the exact same `SceneDesignState` via
+ * issue #75's `deriveSceneGeometryFromScene` — both computed from one
+ * `handleApply` call so they always describe the same scene snapshot.
+ * `SystemConfig.arrays[].shapeId` correlates entries between the two (see
+ * that field's doc comment); a caller passes both straight through to
+ * `runTmySimulation`/`runLiveSimulation`'s `systemConfig`/`sceneGeometry`
+ * inputs for #77's per-panel occlusion to kick in.
+ */
+export interface SceneApplyResult {
+  systemConfig: SystemConfig
+  sceneGeometry: SceneGeometry
+}
+
 export interface SceneEditorFlowProps {
   /**
    * Whether the overlay is currently visible. `SceneEditorFlow` stays
@@ -120,11 +139,14 @@ export interface SceneEditorFlowProps {
    * multi-array `SystemConfig` (issue #61) — one `PanelArrayConfig` per
    * traced shape, using that shape's step-2 tilt/azimuth, its step-3
    * panel count, `panelPreset`'s panel-model fields, and the step-4
-   * "System losses" field. See `scene/apply`'s `deriveSystemConfigFromScene`
-   * for the derivation itself. When omitted, the Apply button is still
-   * shown (so the step-4 shell exists) but does nothing on click.
+   * "System losses" field — plus the `SceneGeometry` derived from the same
+   * state via `deriveSceneGeometryFromScene` (issue #78), for the caller
+   * to thread into `runTmySimulation`/`runLiveSimulation`'s
+   * `sceneGeometry` input alongside the `systemConfig`. See
+   * `SceneApplyResult`'s doc comment. When omitted, the Apply button is
+   * still shown (so the step-4 shell exists) but does nothing on click.
    */
-  onApply?: (config: SystemConfig) => void
+  onApply?: (result: SceneApplyResult) => void
   /** Panel dimensions used to auto-fill the 3D preview when a shape doesn't specify its own. Defaults to `panelPreset`'s dimensions. */
   defaultPanel?: PanelDimensions
   /**
@@ -305,7 +327,8 @@ export function SceneEditorFlow({
       panelPreset,
       systemLossesPercent: Number(systemLossesInput.trim()),
     })
-    onApply?.(systemConfig)
+    const sceneGeometry = deriveSceneGeometryFromScene(state)
+    onApply?.({ systemConfig, sceneGeometry })
   }
 
   useEffect(() => {

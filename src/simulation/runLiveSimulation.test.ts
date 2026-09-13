@@ -517,5 +517,60 @@ describe('runLiveSimulation', () => {
       expect(middayWatts).toBeCloseTo(4180.5, 1)
       expect(eveningWatts).toBeCloseTo(558.4, 1)
     })
+
+    it('ignores manualShadingPercent for an array with real scene geometry driving its occlusion (issue #78 / PR #82 review)', async () => {
+      // Same decision as `runTmySimulation.test.ts`'s equivalent test: once
+      // `shapeId` resolves against `sceneGeometry`, M3's computed occlusion
+      // REPLACES manualShadingPercent rather than stacking with it — so a
+      // non-zero manualShadingPercent must have zero effect here, even with
+      // no obstruction placed.
+      const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
+      const unshadedSystem: SystemConfig = {
+        arrays: [{ ...SCENE_ARRAY, manualShadingPercent: 0 }],
+        systemLossesPercent: 14,
+      }
+      const heavilyManualShadedSystem: SystemConfig = {
+        arrays: [{ ...SCENE_ARRAY, manualShadingPercent: 80 }],
+        systemLossesPercent: 14,
+      }
+
+      const unshadedResult = await runLiveSimulation(
+        {
+          location: BERLIN,
+          systemConfig: unshadedSystem,
+          sceneGeometry: sceneGeometryWithObstruction([]),
+        },
+        deps,
+      )
+      const manualShadedResult = await runLiveSimulation(
+        {
+          location: BERLIN,
+          systemConfig: heavilyManualShadedSystem,
+          sceneGeometry: sceneGeometryWithObstruction([]),
+        },
+        deps,
+      )
+
+      expect(manualShadedResult).toEqual(unshadedResult)
+
+      // Sanity check: manualShadingPercent still matters on the pre-M3
+      // fallback path (no sceneGeometry supplied), proving the equality
+      // above isn't a coincidence of this fixture's irradiance.
+      const unshadedFallback = await runLiveSimulation(
+        { location: BERLIN, systemConfig: unshadedSystem },
+        deps,
+      )
+      const manualShadedFallback = await runLiveSimulation(
+        { location: BERLIN, systemConfig: heavilyManualShadedSystem },
+        deps,
+      )
+      const fallbackMidday = manualShadedFallback.hourlyWattsSeries.find(
+        (p) => p.timestamp === MIDDAY_TIMESTAMP,
+      )!.watts
+      const unshadedFallbackMidday = unshadedFallback.hourlyWattsSeries.find(
+        (p) => p.timestamp === MIDDAY_TIMESTAMP,
+      )!.watts
+      expect(fallbackMidday).toBeLessThan(unshadedFallbackMidday)
+    })
   })
 })
