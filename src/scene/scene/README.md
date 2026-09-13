@@ -10,20 +10,48 @@ a traced polygon's tilt/azimuth) plus a panel preset's real
 `widthMm`/`heightMm` — as a tilted plane auto-filled with a panel grid
 (via `scene/derive`'s `panelAutoFillGrid`), with a free orbit camera
 (`@react-three/drei`'s `OrbitControls`) and a north-arrow gizmo for
-orientation.
+orientation. It also renders and manages placed obstructions (trees and
+buildings, issue #58): clicking empty ground places one, and a small
+property panel lets the user adjust its height/footprint/position or
+remove it.
 
 This component is intentionally self-contained: it takes derived geometry
 as props and renders it. It does **not**:
 
 - trace shapes or edit tilt/azimuth (that's the tracing step and issue
   #59's config UI),
-- place or render obstructions (issue #58),
+- calculate shadows from obstructions — only their placement/geometry is
+  modeled here (that's M3),
 - wire into the app's data flow / provide an entry point (issue #60).
 
 Depends on `scene/derive` (for `ExtrusionGeometry`, `PanelDimensions`, and
 `panelAutoFillGrid`) and, for panel dimensions, whatever the caller reads
 out of `panel-presets/` — this module doesn't import `panel-presets/`
 itself, it only needs the `widthMm`/`heightMm` shape.
+
+## Obstructions (issue #58)
+
+`Scene3DView` accepts an optional `obstructions` prop (a list of
+`{ id, kind: 'tree' | 'building', position: {x, y}, heightM, radiusM }`,
+see `obstructions.ts`) the same way `AppShell` supports controlled
+`mode`/`activeTab`: pass `obstructions` + `onObstructionsChange` to have
+the caller own the list, or omit both to let `Scene3DView` manage its own
+state (optionally seeded via `defaultObstructions`). Placement/edits
+happen through:
+
+- clicking empty ground (raycast against z = 0 via
+  `obstructionPlacement.ts`'s `intersectGroundPlane`, a pure function so
+  the ray math itself is directly unit-tested) to place a new obstruction
+  of whichever kind is toggled in the small on-canvas toolbar,
+- the `ObstructionPropertyPanel` (plain HTML form, rendered _outside_ the
+  `<Canvas>`) to adjust the selected obstruction's height, footprint
+  radius, and X/Y position, or delete it.
+
+Height/position adjustment is deliberately numeric-field-based rather than
+an in-3D drag gesture — see the reasoning in `Scene3DView.tsx`'s own
+module doc comment (in short: `OrbitControls` already owns the canvas's
+drag gesture, and a competing per-object drag gesture is real complexity
+this milestone doesn't need).
 
 ## Files
 
@@ -35,6 +63,16 @@ itself, it only needs the `widthMm`/`heightMm` shape.
 - `NorthArrowGizmo.tsx` — a small custom scene-anchored compass arrow
   (not one of drei's viewport-fixed `GizmoHelper`/`GizmoViewport` axis
   cubes, which show render-space X/Y/Z rather than true north).
+- `obstructions.ts` — the `Obstruction`/`ObstructionKind` data model and
+  `createObstruction`.
+- `obstructionPlacement.ts` — pure ray/ground-plane intersection math
+  (`intersectGroundPlane`) for click-to-place.
+- `ObstructionMesh.tsx` — schematic tree (trunk + foliage cone) / building
+  (box) geometry, using Three's built-in primitive geometries rather than
+  a custom `BufferGeometry` builder (no tilted-plane math is needed here,
+  unlike panels).
+- `ObstructionPropertyPanel.tsx` — the height/footprint/position/delete
+  form for the selected obstruction.
 
 ## Testing
 

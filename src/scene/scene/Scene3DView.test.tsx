@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 // R3F/WebGL needs a real GPU canvas, which jsdom doesn't provide — mirroring
@@ -38,6 +38,10 @@ const genericResidentialPanel = { widthMm: 1134, heightMm: 1722 }
 // NorthArrowGizmo always renders 2 <mesh> elements (shaft + head cone),
 // present regardless of how many shapes are given.
 const GIZMO_MESH_COUNT = 2
+// Scene3DView always renders one invisible ground-plane <mesh> for
+// click-to-place obstructions (issue #58), regardless of shape/obstruction
+// count.
+const GROUND_PLANE_MESH_COUNT = 1
 
 describe('Scene3DView', () => {
   it('renders the mocked canvas and orbit controls with no shapes', () => {
@@ -62,7 +66,7 @@ describe('Scene3DView', () => {
     // dimensions were supplied at either the shape or component level,
     // plus the gizmo's fixed 2 meshes.
     expect(container.querySelectorAll('mesh')).toHaveLength(
-      shapes.length + GIZMO_MESH_COUNT,
+      shapes.length + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT,
     )
   })
 
@@ -78,7 +82,7 @@ describe('Scene3DView', () => {
     )
     // Plane mesh + panel mesh, plus the gizmo's fixed 2 meshes.
     expect(container.querySelectorAll('mesh')).toHaveLength(
-      2 + GIZMO_MESH_COUNT,
+      2 + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT,
     )
   })
 
@@ -94,5 +98,115 @@ describe('Scene3DView', () => {
       <Scene3DView shapes={shapes} defaultPanel={genericResidentialPanel} />,
     )
     expect(container.querySelectorAll('mesh').length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// Simulates a click ray straight down from (x, y, 10) toward the ground
+// plane (z = 0), matching `intersectGroundPlane`'s expectations — see its
+// own unit tests in `obstructionPlacement.test.ts` for the underlying math.
+//
+// Real R3F pointer events (`ThreeEvent<MouseEvent>`) carry a `.ray`
+// property directly on the event object, entirely outside React's own
+// SyntheticEvent system. The mocked Canvas here renders through plain
+// react-dom instead, so `onClick` receives an ordinary React
+// SyntheticEvent wrapping a real browser `MouseEvent` — and neither
+// `fireEvent.click`'s `eventInit` dict nor the `MouseEvent` constructor
+// itself will carry an arbitrary extra property like `ray` (unknown init
+// keys are silently dropped). So the event is built by hand here and the
+// custom `ray` property is defined on it directly before dispatch, via
+// the lower-level `fireEvent(element, event)` overload.
+function clickGround(element: Element, x: number, y: number) {
+  const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'ray', {
+    value: { origin: { x, y, z: 10 }, direction: { x: 0, y: 0, z: -1 } },
+  })
+  fireEvent(element, event)
+}
+
+describe('Scene3DView obstructions', () => {
+  const shapes = [
+    {
+      id: 'a',
+      geometry: polygonToExtrusionGeometry(flatSquare(0, 0), 20, 180),
+    },
+  ]
+
+  it('places a tree (the default kind) on a ground click and shows its property panel', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+    expect(ground).not.toBeNull()
+
+    clickGround(ground as Element, 3, 4)
+
+    expect(screen.getByTestId('obstruction-property-panel')).toBeInTheDocument()
+    expect(screen.getByText('tree')).toBeInTheDocument()
+    // Default tree height, per `createObstruction`.
+    expect(screen.getByLabelText(/height/i)).toHaveValue(5)
+  })
+
+  it('places a building once the toolbar toggle is switched', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    fireEvent.click(screen.getByText('Building'))
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+
+    clickGround(ground as Element, 1, 1)
+
+    expect(screen.getByText('building')).toBeInTheDocument()
+    expect(screen.getByLabelText(/height/i)).toHaveValue(6)
+  })
+
+  it('reports the placed obstruction via onObstructionsChange (controlled usage)', () => {
+    const onObstructionsChange = vi.fn()
+    const { container } = render(
+      <Scene3DView
+        shapes={shapes}
+        obstructions={[]}
+        onObstructionsChange={onObstructionsChange}
+      />,
+    )
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+
+    clickGround(ground as Element, 5, -2)
+
+    expect(onObstructionsChange).toHaveBeenCalledTimes(1)
+    const [next] = onObstructionsChange.mock.calls[0]
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      kind: 'tree',
+      position: { x: 5, y: -2 },
+    })
+  })
+
+  it('edits height via the property panel and deletes via the Remove button', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+    clickGround(ground as Element, 0, 0)
+
+    const heightInput = screen.getByLabelText(/height/i)
+    fireEvent.change(heightInput, { target: { value: '8' } })
+    expect(screen.getByLabelText(/height/i)).toHaveValue(8)
+
+    fireEvent.click(screen.getByText('Remove'))
+    expect(
+      screen.queryByTestId('obstruction-property-panel'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('starts with the given controlled obstructions rendered, with no ground click needed', () => {
+    const initial = [
+      {
+        id: 'fixed-1',
+        kind: 'tree' as const,
+        position: { x: 2, y: 2 },
+        heightM: 5,
+        radiusM: 1.5,
+      },
+    ]
+    const { container } = render(
+      <Scene3DView shapes={shapes} obstructions={initial} />,
+    )
+    expect(
+      container.querySelector('[name="obstruction-tree-fixed-1"]'),
+    ).not.toBeNull()
   })
 })
