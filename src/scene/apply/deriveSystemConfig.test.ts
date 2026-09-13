@@ -174,4 +174,48 @@ describe('deriveSystemConfigFromScene', () => {
     })
     expect(config.arrays).toEqual([])
   })
+
+  // Issue #78: `shapeId` correlates a derived array with the matching
+  // `SceneGeometry.shapes`/`panels` entry from `deriveSceneGeometryFromScene`
+  // — see `PanelArrayConfig.shapeId`'s doc comment.
+  const SQUARE = [
+    { lat: 52.5, lon: 13.4 },
+    { lat: 52.5005, lon: 13.4 },
+    { lat: 52.5005, lon: 13.4005 },
+    { lat: 52.5, lon: 13.4005 },
+  ]
+
+  it('populates shapeId with the traced shape id when its geometry is resolvable', () => {
+    const state = makeState({
+      tracedShapes: [{ id: 'shape-1', kind: 'roof-face', polygon: SQUARE }],
+      shapeConfigs: [{ shapeId: 'shape-1', tiltDeg: 30, azimuthDeg: 180 }],
+      panelLayouts: [{ shapeId: 'shape-1', panelCount: 10, panels: [] }],
+    })
+
+    const config = deriveSystemConfigFromScene(state, { panelPreset: PRESET })
+
+    expect(config.arrays[0].shapeId).toBe('shape-1')
+  })
+
+  it('leaves shapeId undefined for a configured shape whose polygon cannot produce valid geometry (matching deriveSceneGeometryFromScene’s own skip condition, per PR #82 review)', () => {
+    // An empty polygon is a config attached to a shape that isn't
+    // geometrizable — `deriveSceneGeometryFromScene` would skip it
+    // entirely, so this array must not carry a `shapeId` that
+    // `SceneGeometry.shapes` will never contain: it should instead fall
+    // back to the pre-M3 `manualShadingPercent` flat-derate path
+    // (see `resolveArrayScenePanels`), same as before this field existed —
+    // rather than the array vanishing (this function's own
+    // shape-inclusion condition is looser than the geometry one, see this
+    // function's doc comment) or silently carrying a dangling id.
+    const state = makeState({
+      tracedShapes: [{ id: 's1', kind: 'roof-face', polygon: [] }],
+      shapeConfigs: [{ shapeId: 's1', tiltDeg: 30, azimuthDeg: 180 }],
+      panelLayouts: [{ shapeId: 's1', panelCount: 10, panels: [] }],
+    })
+
+    const config = deriveSystemConfigFromScene(state, { panelPreset: PRESET })
+
+    expect(config.arrays).toHaveLength(1)
+    expect(config.arrays[0].shapeId).toBeUndefined()
+  })
 })

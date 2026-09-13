@@ -88,14 +88,14 @@ export interface PanelArrayConfig {
    * `SceneDesignState` are not guaranteed to line up positionally. An
    * explicit id removes that fragility.
    *
-   * NOTE: as of this field's introduction, `deriveSystemConfigFromScene`
-   * does not yet populate it — that's part of wiring the Apply flow
-   * (issue #78, out of this issue's scope), which will need to set
-   * `shapeId: shape.id` on each derived array alongside the existing
-   * fields. Until then, every real `SystemConfig` produced by `scene/apply/`
-   * has `shapeId: undefined` on every array, so `runTmySimulation`/
-   * `runLiveSimulation` fall back to the pre-M3 `manualShadingPercent`
-   * path for it exactly as before — see this issue's PR description.
+   * As of issue #78, `deriveSystemConfigFromScene` populates this with the
+   * owning traced shape's `id` whenever that shape's geometry is
+   * resolvable (see its own doc comment for the one case where it's left
+   * `undefined` instead — a shape config that can't produce valid
+   * geometry, matching `deriveSceneGeometryFromScene`'s own skip
+   * condition). The manual single-array form path still never sets it, so
+   * `runTmySimulation`/`runLiveSimulation` correctly keep using the pre-M3
+   * `manualShadingPercent` path for it.
    */
   shapeId?: string
 }

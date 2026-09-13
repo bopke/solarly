@@ -631,5 +631,64 @@ describe('buildTmySimulationResult', () => {
 
       expect(withSceneGeometryButNoShapeIdMatch).toEqual(withoutSceneGeometry)
     })
+
+    it('ignores manualShadingPercent for an array with real scene geometry driving its occlusion (issue #78 / PR #82 review)', () => {
+      // M3's whole point is to REPLACE the user-estimated manualShadingPercent
+      // derate with the real computed one for an array whose occlusion is
+      // actually driven by scene geometry — not stack the two. A non-zero
+      // manualShadingPercent must have zero effect once `shapeId` resolves
+      // against `sceneGeometry`, even with no obstruction placed (so any
+      // stacking would otherwise show up as a plain flat derate).
+      const unshaded: SystemConfig = {
+        arrays: [{ ...SCENE_ARRAY, manualShadingPercent: 0 }],
+        systemLossesPercent: 14,
+      }
+      const heavilyManualShaded: SystemConfig = {
+        arrays: [{ ...SCENE_ARRAY, manualShadingPercent: 80 }],
+        systemLossesPercent: 14,
+      }
+
+      const unshadedResult = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        unshaded,
+        SUNNY_LOCATION_NORMALS,
+        REFERENCE_YEAR,
+        sceneGeometryWithObstruction([]),
+      )
+      const manualShadedResult = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        heavilyManualShaded,
+        SUNNY_LOCATION_NORMALS,
+        REFERENCE_YEAR,
+        sceneGeometryWithObstruction([]),
+      )
+
+      // Compare computed output only — `systemConfig` is just the input
+      // echoed back verbatim (see `TmySimulationResult`'s doc comment), so
+      // it correctly differs on `manualShadingPercent` between the two
+      // inputs; that's not what this test is checking.
+      expect(manualShadedResult.months).toEqual(unshadedResult.months)
+      expect(manualShadedResult.annualTotalKWh).toEqual(
+        unshadedResult.annualTotalKWh,
+      )
+
+      // Sanity check: manualShadingPercent DOES still matter for the same
+      // array on the pre-M3 fallback path (no sceneGeometry supplied) —
+      // proving the equality above isn't just because 80% shading happens
+      // to have no measurable effect at this fixture's irradiance.
+      const unshadedFallback = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        unshaded,
+        SUNNY_LOCATION_NORMALS,
+      )
+      const manualShadedFallback = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        heavilyManualShaded,
+        SUNNY_LOCATION_NORMALS,
+      )
+      expect(manualShadedFallback.annualTotalKWh).toBeLessThan(
+        unshadedFallback.annualTotalKWh,
+      )
+    })
   })
 })

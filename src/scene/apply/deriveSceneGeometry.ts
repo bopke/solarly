@@ -39,7 +39,7 @@
  * translate relative to it either way.
  */
 
-import type { PanelPlacement } from '../derive'
+import type { LatLon, PanelPlacement } from '../derive'
 import { polygonToExtrusionGeometry } from '../derive'
 import {
   liftToPlane,
@@ -72,6 +72,36 @@ interface ResolvedShapeGeometry {
   vertices: Vec3[]
   tiltDeg: number
   azimuthDeg: number
+}
+
+/**
+ * Whether a traced shape's step-2 config can actually produce geometry —
+ * i.e. whether `deriveSceneGeometryFromScene` would include it in
+ * `SceneGeometry.shapes`/`panels` rather than silently skipping it (a
+ * missing config, or a config whose tilt/polygon combination makes
+ * `polygonToExtrusionGeometry` throw — see that function's doc comment for
+ * what counts as degenerate).
+ *
+ * Exported so `deriveSystemConfig.ts` can decide, per array, whether to
+ * populate `PanelArrayConfig.shapeId` — the two derivations must agree on
+ * exactly which shapes are "resolvable" (see `PanelArrayConfig.shapeId`'s
+ * doc comment on why they used to disagree: `deriveSystemConfigFromScene`
+ * only checked for a missing config, not a degenerate one). Calling this
+ * from both places, rather than duplicating the check, is what keeps them
+ * in sync.
+ */
+export function isShapeGeometryResolvable(
+  shape: { polygon: LatLon[] },
+  config: { tiltDeg: number; azimuthDeg: number } | undefined,
+): boolean {
+  if (!config) return false
+  const safeTilt = Math.min(config.tiltDeg, MAX_GEOMETRY_TILT_DEG)
+  try {
+    polygonToExtrusionGeometry(shape.polygon, safeTilt, config.azimuthDeg)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Lifts a panel's plan-view center onto its shape's tilted plane, then translates into the shared scene-local frame. */

@@ -16,6 +16,7 @@ import {
   runLiveSimulation,
   runTmySimulation,
   type LiveSimulationResult,
+  type SceneGeometry,
   type SystemConfig,
   type TmySimulationResult,
 } from './simulation'
@@ -135,6 +136,15 @@ function App() {
   const [sceneSystemConfig, setSceneSystemConfig] = useState<
     SystemConfig | undefined
   >(undefined)
+  // The `SceneGeometry` derived alongside `sceneSystemConfig` from the same
+  // Apply click (issue #78's `SceneEditorFlow` `onApply`) — kept in its own
+  // slot rather than folded into `sceneSystemConfig` since only the
+  // simulation calls need it (not the sidebar summary), and so it can be
+  // cleared together with `sceneSystemConfig` wherever that already
+  // happens without hunting down every call site individually.
+  const [sceneGeometry, setSceneGeometry] = useState<SceneGeometry | undefined>(
+    undefined,
+  )
   const [configSource, setConfigSource] = useState<SystemConfigSource>('manual')
 
   // Controlled here (rather than left uncontrolled inside AppShell) so
@@ -232,6 +242,7 @@ function App() {
     // currently empty/invalid — `updateDisabled`/`handleUpdate` already
     // gate on that.
     setSceneSystemConfig(undefined)
+    setSceneGeometry(undefined)
     setConfigSource('manual')
   }
 
@@ -246,6 +257,14 @@ function App() {
       : systemConfig
         ? toSimulationSystemConfig(systemConfig)
         : undefined
+  // Only threaded into the simulation calls when the applied-scene source
+  // is active — the manual single-array form has no 3D geometry at all, so
+  // passing `undefined` there keeps `runTmySimulation`/`runLiveSimulation`
+  // on the pre-M3 `manualShadingPercent` path exactly as before (issue
+  // #78's scope: manual-form behavior is unchanged, byte-identical per
+  // #77's own regression tests).
+  const activeSceneGeometry: SceneGeometry | undefined =
+    configSource === 'scene' ? sceneGeometry : undefined
   const isActiveConfigValid =
     configSource === 'scene'
       ? sceneSystemConfig !== undefined
@@ -265,12 +284,18 @@ function App() {
     const requestId = ++latestRequestId.current
 
     const simulationSystemConfig = activeSystemConfig
+    const simulationSceneGeometry = activeSceneGeometry
     const run =
       runMode === 'tmy'
-        ? runTmySimulation({ location, systemConfig: simulationSystemConfig })
+        ? runTmySimulation({
+            location,
+            systemConfig: simulationSystemConfig,
+            sceneGeometry: simulationSceneGeometry,
+          })
         : runLiveSimulation({
             location,
             systemConfig: simulationSystemConfig,
+            sceneGeometry: simulationSceneGeometry,
           })
 
     run
@@ -417,14 +442,17 @@ function App() {
           location={location}
           onClose={() => setIsSceneOpen(false)}
           onStateChange={setSceneState}
-          onApply={(config) => {
+          onApply={({ systemConfig: config, sceneGeometry: geometry }) => {
             // `SceneEditorFlow` already derived the multi-array
-            // `SystemConfig` (issue #61's `deriveSystemConfigFromScene`) —
-            // this just adopts it as the active source and closes the
-            // overlay. Any results computed from whichever source was
-            // active before must not linger looking current for a config
-            // that no longer describes what's about to run.
+            // `SystemConfig` (issue #61's `deriveSystemConfigFromScene`)
+            // and, as of issue #78, the correlated `SceneGeometry` (issue
+            // #75's `deriveSceneGeometryFromScene`) from the same scene
+            // snapshot — this just adopts both as the active source and
+            // closes the overlay. Any results computed from whichever
+            // source was active before must not linger looking current for
+            // a config that no longer describes what's about to run.
             setSceneSystemConfig(config)
+            setSceneGeometry(geometry)
             setConfigSource('scene')
             clearStaleResults()
             setIsSceneOpen(false)

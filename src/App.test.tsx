@@ -104,6 +104,20 @@ const FAKE_SCENE_SYSTEM_CONFIG = {
   systemLossesPercent: 14,
 }
 
+// Minimal but real-shaped `SceneGeometry` (issue #78) — the stubbed
+// `SceneEditorFlow` below hands this out via `onApply` alongside
+// `FAKE_SCENE_SYSTEM_CONFIG`, exactly as the real component's Apply step
+// derives both from the same scene snapshot. Not asserted against directly
+// in most tests here (that's `SceneEditorFlow.test.tsx`'s job) — its
+// purpose is just to exercise `App.tsx`'s own threading of `sceneGeometry`
+// into the simulation calls (see the "geometric scene shading" describe
+// block below).
+const FAKE_SCENE_GEOMETRY = {
+  shapes: [{ id: 'shape-1', vertices: [] }],
+  obstructions: [],
+  panels: [],
+}
+
 vi.mock('./scene/flow', () => ({
   SceneEditorFlow: ({
     open,
@@ -116,7 +130,10 @@ vi.mock('./scene/flow', () => ({
     location: { lat: number; lon: number }
     onClose: () => void
     onStateChange?: (state: unknown) => void
-    onApply?: (config: unknown) => void
+    onApply?: (result: {
+      systemConfig: unknown
+      sceneGeometry: unknown
+    }) => void
   }) => {
     useEffect(() => {
       sceneFlowMounts.push({ lat: location.lat })
@@ -142,7 +159,14 @@ vi.mock('./scene/flow', () => ({
         >
           set-scene-state
         </button>
-        <button onClick={() => onApply?.(FAKE_SCENE_SYSTEM_CONFIG)}>
+        <button
+          onClick={() =>
+            onApply?.({
+              systemConfig: FAKE_SCENE_SYSTEM_CONFIG,
+              sceneGeometry: FAKE_SCENE_GEOMETRY,
+            })
+          }
+        >
           apply-scene
         </button>
       </div>
@@ -630,6 +654,92 @@ describe('App', () => {
       expect(
         screen.getByRole('form', { name: 'System configuration' }),
       ).toBeInTheDocument()
+    })
+  })
+
+  describe('threading SceneGeometry into the simulation calls (issue #78)', () => {
+    function applyScene() {
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+      fireEvent.click(screen.getByRole('button', { name: 'apply-scene' }))
+    }
+
+    it('passes the derived sceneGeometry to runTmySimulation when the applied-scene source is active', async () => {
+      runTmySimulation.mockResolvedValueOnce(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      clickUpdate()
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({ sceneGeometry: FAKE_SCENE_GEOMETRY }),
+      )
+    })
+
+    it('passes the derived sceneGeometry to runLiveSimulation when the applied-scene source is active', async () => {
+      runLiveSimulation.mockResolvedValueOnce({
+        mode: 'live',
+        location: { lat: 48.8566, lon: 2.3522 },
+        hourlyWattsSeries: [],
+      })
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      fireEvent.click(screen.getByRole('radio', { name: 'Live' }))
+      clickUpdate()
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(runLiveSimulation).toHaveBeenCalledWith(
+        expect.objectContaining({ sceneGeometry: FAKE_SCENE_GEOMETRY }),
+      )
+    })
+
+    it('passes no sceneGeometry to runTmySimulation when the manual form is the active source (unchanged pre-M3 behavior)', async () => {
+      runTmySimulation.mockResolvedValueOnce(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      clickUpdate()
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({ sceneGeometry: undefined }),
+      )
+    })
+
+    it('reverts to passing no sceneGeometry after switching back to the manual form', async () => {
+      runTmySimulation.mockResolvedValue(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use manual form instead' }),
+      )
+      clickUpdate()
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({ sceneGeometry: undefined }),
+      )
     })
   })
 })

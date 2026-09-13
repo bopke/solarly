@@ -252,6 +252,13 @@ function hourlyPowerPoint(
   const watts = systemConfig.arrays.reduce((sum, array) => {
     const geometry = arrayScenePanels.get(array)
     if (geometry && sunDirection) {
+      // Real scene geometry is driving this array's occlusion — M3
+      // replaces the user-estimated `manualShadingPercent` derate with the
+      // real computed one rather than stacking both (harmless while the
+      // scene-editor path always produced 0, but no longer once #78 wired
+      // this up live — see PR #82 review). The non-occlusion fallback
+      // below still applies the array's own `manualShadingPercent`
+      // exactly as before.
       const powerW = computeArrayPowerWithOcclusion(
         array,
         geometry,
@@ -262,10 +269,7 @@ function hourlyPowerPoint(
         },
         decomposed,
         entry.temperatureC,
-        combinedLossesPercent(
-          systemConfig.systemLossesPercent,
-          array.manualShadingPercent,
-        ),
+        combinedLossesPercent(systemConfig.systemLossesPercent, 0),
       )
       return sum + Math.max(powerW, 0)
     }
