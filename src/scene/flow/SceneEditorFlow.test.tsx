@@ -153,6 +153,7 @@ vi.mock('../scene', () => ({
 // Imported after the mocks above so the mocked modules are in place.
 import { SceneEditorFlow } from './SceneEditorFlow'
 import type { SceneDesignState } from './types'
+import type { SystemConfig } from '../../simulation'
 
 const LOCATION = { lat: 52.5, lon: 13.4 }
 
@@ -160,7 +161,7 @@ function Harness({
   onApply,
   onStateChange,
 }: {
-  onApply?: (state: SceneDesignState) => void
+  onApply?: (config: SystemConfig) => void
   onStateChange?: (state: SceneDesignState) => void
 }): ReactNode {
   return (
@@ -237,7 +238,7 @@ describe('SceneEditorFlow', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('surfaces Scene3DView-reported panel layouts on SceneDesignState (PR #70 review finding 2)', async () => {
+  it('surfaces Scene3DView-reported panel layouts into the derived SystemConfig (PR #70 review finding 2)', async () => {
     const user = userEvent.setup()
     const onApply = vi.fn()
     render(<Harness onApply={onApply} />)
@@ -250,18 +251,17 @@ describe('SceneEditorFlow', () => {
     await user.click(screen.getByRole('button', { name: 'report-panels' }))
     await user.click(screen.getByRole('button', { name: 'Next' }))
 
-    // Step 4 shows the total across shapes, and Apply hands the same
-    // per-shape layouts issue #61 needs onward — not a recomputed value.
+    // Step 4 shows the total across shapes, and Apply derives from the
+    // same per-shape layouts issue #61 needs — not a recomputed value.
     expect(screen.getByText(/12 panels/)).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Apply' }))
-    const state = onApply.mock.calls[0][0] as SceneDesignState
-    expect(state.panelLayouts).toEqual([
-      { shapeId: 'shape-1', panelCount: 12, panels: [] },
-    ])
+    const config = onApply.mock.calls[0][0] as SystemConfig
+    expect(config.arrays).toHaveLength(1)
+    expect(config.arrays[0].panelCount).toBe(12)
   })
 
-  it('calls onApply with the full aggregated state when Apply is clicked', async () => {
+  it('calls onApply with a SystemConfig derived from the full aggregated state (issue #61)', async () => {
     const user = userEvent.setup()
     const onApply = vi.fn()
     render(<Harness onApply={onApply} />)
@@ -271,18 +271,108 @@ describe('SceneEditorFlow', () => {
     await user.click(screen.getByRole('button', { name: 'configure-valid' }))
     await user.click(screen.getByRole('button', { name: 'Next' }))
     await user.click(screen.getByRole('button', { name: 'add-obstruction' }))
+    await user.click(screen.getByRole('button', { name: 'report-panels' }))
     await user.click(screen.getByRole('button', { name: 'Next' }))
     await user.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(onApply).toHaveBeenCalledTimes(1)
-    const state = onApply.mock.calls[0][0] as SceneDesignState
-    expect(state.tracedShapes).toHaveLength(1)
-    expect(state.tracedShapes[0].id).toBe('shape-1')
-    expect(state.shapeConfigs).toEqual([
-      { shapeId: 'shape-1', tiltDeg: 25, azimuthDeg: 180 },
+    const config = onApply.mock.calls[0][0] as SystemConfig
+    expect(config.arrays).toEqual([
+      {
+        tiltDeg: 25,
+        azimuthDeg: 180,
+        panelCount: 12,
+        wattsPerPanel: 400,
+        efficiencyPercent: 20,
+        tempCoefficientPercentPerC: -0.35,
+        manualShadingPercent: 0,
+      },
     ])
-    expect(state.isShapeConfigValid).toBe(true)
-    expect(state.obstructions).toHaveLength(1)
+    // Defaults to the same "System losses" default as `SystemConfigForm`.
+    expect(config.systemLossesPercent).toBe(14)
+  })
+
+  it('uses the supplied panelPreset (rather than the default) to fill the derived arrays', async () => {
+    const user = userEvent.setup()
+    const onApply = vi.fn()
+    render(
+      <SceneEditorFlow
+        open
+        location={LOCATION}
+        onClose={() => {}}
+        onApply={onApply}
+        panelPreset={{
+          id: 'custom',
+          make: 'Custom',
+          model: 'Panel',
+          ratedWattsPeak: 500,
+          efficiencyPercent: 22,
+          widthMm: 1100,
+          heightMm: 2100,
+          areaM2: 2.31,
+          tempCoefficientPercentPerC: -0.28,
+          isGeneric: false,
+          notes: '',
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'report-panels' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+
+    const config = onApply.mock.calls[0][0] as SystemConfig
+    expect(config.arrays[0]).toMatchObject({
+      wattsPerPanel: 500,
+      efficiencyPercent: 22,
+      tempCoefficientPercentPerC: -0.28,
+    })
+  })
+
+  it('lets the user edit "System losses" and reflects it in the derived SystemConfig', async () => {
+    const user = userEvent.setup()
+    const onApply = vi.fn()
+    render(<Harness onApply={onApply} />)
+
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    const lossesInput = screen.getByLabelText('System losses (%)')
+    await user.clear(lossesInput)
+    await user.type(lossesInput, '9')
+
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    const config = onApply.mock.calls[0][0] as SystemConfig
+    expect(config.systemLossesPercent).toBe(9)
+  })
+
+  it('disables Apply and shows an inline error for an invalid "System losses" value', async () => {
+    const user = userEvent.setup()
+    const onApply = vi.fn()
+    render(<Harness onApply={onApply} />)
+
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    const lossesInput = screen.getByLabelText('System losses (%)')
+    await user.clear(lossesInput)
+    await user.type(lossesInput, '150')
+
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent(/at most 100/i)
+
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(onApply).not.toHaveBeenCalled()
   })
 
   it('notifies onStateChange as the aggregated state changes', async () => {
@@ -367,6 +457,49 @@ describe('SceneEditorFlow', () => {
     rerender(<SceneEditorFlow open location={LOCATION} onClose={() => {}} />)
     expect(overlay).toHaveAttribute('data-open', 'true')
     expect(overlay).toHaveAttribute('aria-hidden', 'false')
+  })
+
+  it('hides the active step panel too when closed, so it does not visually bleed through onto whatever is behind the overlay', async () => {
+    const user = userEvent.setup()
+    const onApply = vi.fn()
+    const { container, rerender } = render(
+      <SceneEditorFlow
+        open
+        location={LOCATION}
+        onClose={() => {}}
+        onApply={onApply}
+      />,
+    )
+
+    // Advance all the way to step 4 (Apply), the step active when a real
+    // "Apply then close" flow (see App.tsx's onApply) closes the overlay.
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByRole('heading', { name: 'Apply' })).toBeInTheDocument()
+
+    // Close the overlay (mirrors `App.tsx` setting `open={false}` after
+    // Apply) without navigating away from step 4 first.
+    rerender(
+      <SceneEditorFlow
+        open={false}
+        location={LOCATION}
+        onClose={() => {}}
+        onApply={onApply}
+      />,
+    )
+
+    const applyPanel = screen
+      .getByText('Apply', { selector: 'h2' })
+      .closest('[data-visible]')
+    expect(applyPanel).toHaveAttribute('data-visible', 'false')
+    expect(applyPanel).toHaveAttribute('aria-hidden', 'true')
+
+    // The whole overlay itself is also collapsed/hidden, as before.
+    const overlay = container.querySelector('[role="dialog"]')
+    expect(overlay).toHaveAttribute('data-open', 'false')
   })
 
   it('calls onClose when Escape is pressed while open', async () => {

@@ -6,7 +6,9 @@ import type { ShapeConfig } from '../configure'
 import { Scene3DView } from '../scene'
 import type { Obstruction, Scene3DShape, ShapePanelLayout } from '../scene'
 import { polygonToExtrusionGeometry, type PanelDimensions } from '../derive'
-import { PANEL_PRESETS } from '../../panel-presets'
+import { deriveSystemConfigFromScene } from '../apply'
+import { PANEL_PRESETS, type PanelPreset } from '../../panel-presets'
+import type { SystemConfig } from '../../simulation'
 import type { SceneDesignState, SceneFlowLocation } from './types'
 import styles from './SceneEditorFlow.module.css'
 
@@ -33,14 +35,65 @@ const STEPS: Step[] = [1, 2, 3, 4]
  */
 const MAX_RENDER_TILT_DEG = 89.9
 
-const DEFAULT_PANEL: PanelDimensions = (() => {
-  const preset = PANEL_PRESETS.find(
-    (p) => p.id === 'generic-residential-default',
-  )
-  return preset
-    ? { widthMm: preset.widthMm, heightMm: preset.heightMm }
-    : { widthMm: 1000, heightMm: 2000 }
-})()
+const FALLBACK_PANEL_PRESET: PanelPreset = {
+  id: 'fallback-panel',
+  make: 'Generic',
+  model: 'Fallback',
+  ratedWattsPeak: 400,
+  efficiencyPercent: 20,
+  widthMm: 1000,
+  heightMm: 2000,
+  areaM2: 2,
+  tempCoefficientPercentPerC: -0.35,
+  isGeneric: true,
+  notes: '',
+}
+
+/**
+ * Used for both the 3D preview's panel dimensions (`defaultPanel`) and,
+ * per issue #61, the panel model every derived array's `wattsPerPanel`/
+ * `efficiencyPercent`/`tempCoefficientPercentPerC` comes from — the scene
+ * editor doesn't yet support choosing a different panel preset per shape
+ * (or at all), matching the single panel grid `Scene3DView` auto-fills
+ * every shape with. `PANEL_PRESETS.find` should never actually miss (the
+ * id is a fixture of this codebase's own curated dataset), but a static
+ * fallback keeps this component resilient rather than throwing if that
+ * dataset ever changes shape.
+ */
+const DEFAULT_PANEL_PRESET: PanelPreset =
+  PANEL_PRESETS.find((p) => p.id === 'generic-residential-default') ??
+  FALLBACK_PANEL_PRESET
+
+const DEFAULT_PANEL: PanelDimensions = {
+  widthMm: DEFAULT_PANEL_PRESET.widthMm,
+  heightMm: DEFAULT_PANEL_PRESET.heightMm,
+}
+
+/** Matches `SystemConfigForm`'s own default for the equivalent field (`DEFAULT_VALUES.systemLossesPercent`). */
+const DEFAULT_SYSTEM_LOSSES_INPUT = '14'
+
+/**
+ * Mirrors `SystemConfigForm/validation.ts`'s `PLAIN_DECIMAL_PATTERN` —
+ * `scene/` deliberately doesn't import from `ui/` (no cross-module
+ * dependency in that direction, see the M2 spec's module boundaries), so
+ * this small amount of validation logic is duplicated locally rather than
+ * shared.
+ */
+const PLAIN_DECIMAL_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)$/
+
+/** Validates the Apply step's "System losses (%)" field. `null` means valid. */
+function validateSystemLossesPercent(rawValue: string): string | null {
+  const trimmed = rawValue.trim()
+  if (trimmed === '') return 'System losses is required'
+  if (!PLAIN_DECIMAL_PATTERN.test(trimmed)) {
+    return 'System losses must be a number'
+  }
+  const value = Number(trimmed)
+  if (!Number.isFinite(value)) return 'System losses must be a number'
+  if (value < 0) return 'System losses must be at least 0'
+  if (value > 100) return 'System losses must be at most 100'
+  return null
+}
 
 export interface SceneEditorFlowProps {
   /**
@@ -63,16 +116,25 @@ export interface SceneEditorFlowProps {
    */
   onStateChange?: (state: SceneDesignState) => void
   /**
-   * Called when the user clicks step 4's "Apply" button, with the full
-   * current `SceneDesignState`. This is a placeholder hook for issue #61
-   * ("Apply": derive the multi-array `SystemConfig` from this state and
-   * feed it into the simulation) — actually deriving that config is
-   * explicitly out of scope here. When omitted, the Apply button is
-   * still shown (so the step-4 shell exists) but does nothing on click.
+   * Called when the user clicks step 4's "Apply" button, with the derived
+   * multi-array `SystemConfig` (issue #61) — one `PanelArrayConfig` per
+   * traced shape, using that shape's step-2 tilt/azimuth, its step-3
+   * panel count, `panelPreset`'s panel-model fields, and the step-4
+   * "System losses" field. See `scene/apply`'s `deriveSystemConfigFromScene`
+   * for the derivation itself. When omitted, the Apply button is still
+   * shown (so the step-4 shell exists) but does nothing on click.
    */
-  onApply?: (state: SceneDesignState) => void
-  /** Panel dimensions used to auto-fill the 3D preview when a shape doesn't specify its own. Defaults to the `generic-residential-default` preset. */
+  onApply?: (config: SystemConfig) => void
+  /** Panel dimensions used to auto-fill the 3D preview when a shape doesn't specify its own. Defaults to `panelPreset`'s dimensions. */
   defaultPanel?: PanelDimensions
+  /**
+   * The panel model used to fill every derived array's `wattsPerPanel`/
+   * `efficiencyPercent`/`tempCoefficientPercentPerC` on Apply (issue #61)
+   * — see `DEFAULT_PANEL_PRESET`'s doc comment for why this is a single
+   * preset for the whole scene rather than per-shape. Defaults to the
+   * `generic-residential-default` preset.
+   */
+  panelPreset?: PanelPreset
   /** Passed through to `SceneTracing` — mainly for tests; real callers should rely on the `VITE_MAPBOX_API_KEY` env var instead. */
   mapboxApiKey?: string
 }
@@ -113,9 +175,13 @@ export function SceneEditorFlow({
   onStateChange,
   onApply,
   defaultPanel = DEFAULT_PANEL,
+  panelPreset = DEFAULT_PANEL_PRESET,
   mapboxApiKey,
 }: SceneEditorFlowProps) {
   const [step, setStep] = useState<Step>(1)
+  const [systemLossesInput, setSystemLossesInput] = useState(
+    DEFAULT_SYSTEM_LOSSES_INPUT,
+  )
   const [visitedSteps, setVisitedSteps] = useState<ReadonlySet<Step>>(
     () => new Set(),
   )
@@ -230,8 +296,16 @@ export function SceneEditorFlow({
     setStep((s) => (s > 1 ? ((s - 1) as Step) : s))
   }
 
+  const systemLossesError = validateSystemLossesPercent(systemLossesInput)
+  const applyDisabled = systemLossesError !== null
+
   function handleApply() {
-    onApply?.(state)
+    if (applyDisabled) return
+    const systemConfig = deriveSystemConfigFromScene(state, {
+      panelPreset,
+      systemLossesPercent: Number(systemLossesInput.trim()),
+    })
+    onApply?.(systemConfig)
   }
 
   useEffect(() => {
@@ -278,12 +352,25 @@ export function SceneEditorFlow({
         </button>
       </div>
 
+      {/*
+       * Each step panel's `data-visible` is gated on `open` too, not
+       * just `step === N` — CSS `visibility` is overridable by a
+       * descendant (unlike `display`), so a step panel left
+       * `visibility: visible` would otherwise keep rendering (and
+       * visually bleeding through onto whatever's behind the overlay,
+       * e.g. `App.tsx`'s charts) even after `.overlay` itself goes
+       * `visibility: hidden` on close — found while manually verifying
+       * issue #61's Apply flow, where step 4 stayed the active step
+       * after Apply closed the overlay. See `SceneEditorFlow.module.css`'s
+       * comment on why `visibility` (not `display: none`) is used here
+       * in the first place.
+       */}
       <div className={styles.stepsWrapper}>
         {visitedSteps.has(1) && (
           <div
             className={styles.stepPanel}
-            data-visible={step === 1}
-            aria-hidden={step !== 1}
+            data-visible={open && step === 1}
+            aria-hidden={!open || step !== 1}
           >
             <SceneTracing
               center={location}
@@ -299,8 +386,8 @@ export function SceneEditorFlow({
         {visitedSteps.has(2) && (
           <div
             className={styles.stepPanel}
-            data-visible={step === 2}
-            aria-hidden={step !== 2}
+            data-visible={open && step === 2}
+            aria-hidden={!open || step !== 2}
           >
             <ConfigureShapes
               shapes={tracedShapes}
@@ -317,8 +404,8 @@ export function SceneEditorFlow({
         {visitedSteps.has(3) && (
           <div
             className={styles.stepPanel}
-            data-visible={step === 3}
-            aria-hidden={step !== 3}
+            data-visible={open && step === 3}
+            aria-hidden={!open || step !== 3}
           >
             <Scene3DView
               shapes={scene3DShapes}
@@ -334,8 +421,8 @@ export function SceneEditorFlow({
         {visitedSteps.has(4) && (
           <div
             className={styles.stepPanel}
-            data-visible={step === 4}
-            aria-hidden={step !== 4}
+            data-visible={open && step === 4}
+            aria-hidden={!open || step !== 4}
           >
             <div className={styles.applyStep}>
               <h2 className={styles.applyTitle}>Apply</h2>
@@ -348,10 +435,44 @@ export function SceneEditorFlow({
                 {obstructions.length === 1 ? '' : 's'} placed. Applying will
                 replace the manual single-array configuration with this scene.
               </p>
+
+              <div className={styles.applyField}>
+                <label
+                  htmlFor="scene-apply-system-losses"
+                  className={styles.applyFieldLabel}
+                >
+                  System losses (%)
+                </label>
+                <input
+                  id="scene-apply-system-losses"
+                  type="number"
+                  inputMode="decimal"
+                  className={styles.applyFieldInput}
+                  value={systemLossesInput}
+                  onChange={(event) => setSystemLossesInput(event.target.value)}
+                  aria-invalid={systemLossesError ? true : undefined}
+                  aria-describedby={
+                    systemLossesError
+                      ? 'scene-apply-system-losses-error'
+                      : undefined
+                  }
+                />
+                {systemLossesError ? (
+                  <p
+                    id="scene-apply-system-losses-error"
+                    role="alert"
+                    className={styles.applyFieldError}
+                  >
+                    {systemLossesError}
+                  </p>
+                ) : null}
+              </div>
+
               <button
                 type="button"
                 className={styles.applyButton}
                 onClick={handleApply}
+                disabled={applyDisabled}
               >
                 Apply
               </button>

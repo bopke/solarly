@@ -24,3 +24,22 @@
   font-size: 0.85rem;
   color: var(--shell-muted, #78716c);
 }
+
+.sceneAppliedSummary {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--shell-text, #1c1917);
+}
+
+.sceneSwitchButton {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--shell-accent, #1f6feb);
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-align: left;
+  text-decoration: underline;
+  align-self: flex-start;
+}

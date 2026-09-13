@@ -80,17 +80,43 @@ const { sceneFlowMounts } = vi.hoisted(() => ({
   sceneFlowMounts: [] as { lat: number }[],
 }))
 
+const FAKE_SCENE_SYSTEM_CONFIG = {
+  arrays: [
+    {
+      tiltDeg: 30,
+      azimuthDeg: 180,
+      panelCount: 20,
+      wattsPerPanel: 400,
+      efficiencyPercent: 20,
+      tempCoefficientPercentPerC: -0.35,
+      manualShadingPercent: 0,
+    },
+    {
+      tiltDeg: 15,
+      azimuthDeg: 90,
+      panelCount: 22,
+      wattsPerPanel: 400,
+      efficiencyPercent: 20,
+      tempCoefficientPercentPerC: -0.35,
+      manualShadingPercent: 0,
+    },
+  ],
+  systemLossesPercent: 14,
+}
+
 vi.mock('./scene/flow', () => ({
   SceneEditorFlow: ({
     open,
     location,
     onClose,
     onStateChange,
+    onApply,
   }: {
     open: boolean
     location: { lat: number; lon: number }
     onClose: () => void
     onStateChange?: (state: unknown) => void
+    onApply?: (config: unknown) => void
   }) => {
     useEffect(() => {
       sceneFlowMounts.push({ lat: location.lat })
@@ -115,6 +141,9 @@ vi.mock('./scene/flow', () => ({
           }
         >
           set-scene-state
+        </button>
+        <button onClick={() => onApply?.(FAKE_SCENE_SYSTEM_CONFIG)}>
+          apply-scene
         </button>
       </div>
     ) : null
@@ -490,6 +519,117 @@ describe('App', () => {
         // Only one mount so far, from the initial location being set.
         expect(sceneFlowMounts).toHaveLength(1)
       })
+    })
+  })
+
+  describe('applying a scene, sidebar summary, and manual/scene toggle (issue #61)', () => {
+    function applyScene() {
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+      fireEvent.click(screen.getByRole('button', { name: 'apply-scene' }))
+    }
+
+    it('replaces the manual form with a compact summary once a scene is applied, and closes the overlay', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+
+      expect(screen.queryByTestId('scene-editor-flow')).not.toBeInTheDocument()
+      expect(screen.getByText('2 arrays, 42 panels total')).toBeInTheDocument()
+      expect(
+        screen.queryByRole('form', { name: 'System configuration' }),
+      ).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Edit scene' })).toBeEnabled()
+    })
+
+    it('feeds the applied scene SystemConfig into the simulation instead of the manual form output', async () => {
+      runTmySimulation.mockResolvedValueOnce(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      clickUpdate()
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemConfig: expect.objectContaining({
+            arrays: expect.arrayContaining([
+              expect.objectContaining({ panelCount: 20 }),
+              expect.objectContaining({ panelCount: 22 }),
+            ]),
+          }),
+        }),
+      )
+    })
+
+    it('lets the user switch back to the manual form, which then feeds the simulation again', async () => {
+      runTmySimulation.mockResolvedValue(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use manual form instead' }),
+      )
+
+      // The manual form (and the entry point) are back, in place of the
+      // compact summary.
+      expect(
+        screen.getByRole('form', { name: 'System configuration' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText('2 arrays, 42 panels total'),
+      ).not.toBeInTheDocument()
+      // The manual form still has its own sensible default values and is
+      // usable immediately.
+      clickUpdate()
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemConfig: expect.objectContaining({
+            arrays: [expect.objectContaining({ panelCount: 10 })],
+          }),
+        }),
+      )
+    })
+
+    it('lets the user switch from the manual form back to a previously-applied scene', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use manual form instead' }),
+      )
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use applied scene (2 arrays)' }),
+      )
+
+      expect(screen.getByText('2 arrays, 42 panels total')).toBeInTheDocument()
+    })
+
+    it('clears the applied scene and reverts to the manual form on a location change', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      expect(screen.getByText('2 arrays, 42 panels total')).toBeInTheDocument()
+
+      setLocationViaMapClick(41.9028, 12.4964)
+
+      expect(
+        screen.queryByText('2 arrays, 42 panels total'),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('form', { name: 'System configuration' }),
+      ).toBeInTheDocument()
     })
   })
 })
