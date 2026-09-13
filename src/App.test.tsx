@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { useEffect } from 'react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NasaPowerNoDataError } from './data-sources'
 import type {
   HourlyPoint,
@@ -57,6 +58,97 @@ vi.mock('maplibre-gl', () => ({
   NavigationControl: class {},
 }))
 vi.mock('maplibre-gl/dist/maplibre-gl.css', () => ({}))
+
+// `SceneEditorFlow` (issue #60) pulls in MapLibre + mapbox-gl-draw
+// (tracing) and R3F/drei (3D scene) — all real-GPU/WebGL dependencies
+// that jsdom can't run, and that already get their own dedicated mocks in
+// `src/scene/tracing/SceneTracing.test.tsx`,
+// `src/scene/scene/Scene3DView.test.tsx`, and
+// `src/scene/flow/SceneEditorFlow.test.tsx`. This file's job is only
+// `App`'s own wiring — the entry-point button's location-gating, opening
+// the overlay, the compact "N shapes" summary reflecting `onStateChange`,
+// and (PR #70 review finding 3) resetting the scene on a location change
+// — so `SceneEditorFlow` itself is stubbed out here.
+//
+// `sceneFlowMounts` records one entry per *mount* of the stub (via a
+// `useEffect` with an empty dependency array) — since `App` forces a full
+// remount via a changing `key` on a location change (see
+// `handleLocationChange`'s doc comment), this is how the reset tests
+// below distinguish "a new `SceneEditorFlow` instance was created" from
+// merely "the `location` prop was updated on the same instance".
+const { sceneFlowMounts } = vi.hoisted(() => ({
+  sceneFlowMounts: [] as { lat: number }[],
+}))
+
+const FAKE_SCENE_SYSTEM_CONFIG = {
+  arrays: [
+    {
+      tiltDeg: 30,
+      azimuthDeg: 180,
+      panelCount: 20,
+      wattsPerPanel: 400,
+      efficiencyPercent: 20,
+      tempCoefficientPercentPerC: -0.35,
+      manualShadingPercent: 0,
+    },
+    {
+      tiltDeg: 15,
+      azimuthDeg: 90,
+      panelCount: 22,
+      wattsPerPanel: 400,
+      efficiencyPercent: 20,
+      tempCoefficientPercentPerC: -0.35,
+      manualShadingPercent: 0,
+    },
+  ],
+  systemLossesPercent: 14,
+}
+
+vi.mock('./scene/flow', () => ({
+  SceneEditorFlow: ({
+    open,
+    location,
+    onClose,
+    onStateChange,
+    onApply,
+  }: {
+    open: boolean
+    location: { lat: number; lon: number }
+    onClose: () => void
+    onStateChange?: (state: unknown) => void
+    onApply?: (config: unknown) => void
+  }) => {
+    useEffect(() => {
+      sceneFlowMounts.push({ lat: location.lat })
+      // Mount-only: deliberately NOT re-running on `location` prop
+      // updates, so `sceneFlowMounts`'s length reflects mount count, not
+      // location-prop-update count.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+    return open ? (
+      <div data-testid="scene-editor-flow" data-lat={location.lat}>
+        <button onClick={onClose}>close-scene</button>
+        <button
+          onClick={() =>
+            onStateChange?.({
+              tracedShapes: [{ id: 'shape-1' }],
+              hasInvalidTracedShapes: false,
+              shapeConfigs: [],
+              isShapeConfigValid: true,
+              obstructions: [],
+              panelLayouts: [],
+            })
+          }
+        >
+          set-scene-state
+        </button>
+        <button onClick={() => onApply?.(FAKE_SCENE_SYSTEM_CONFIG)}>
+          apply-scene
+        </button>
+      </div>
+    ) : null
+  },
+}))
 
 const runTmySimulation = vi.fn()
 const runLiveSimulation = vi.fn()
@@ -121,11 +213,11 @@ function makeTmyResult(months: MonthlySimulation[]): TmySimulationResult {
 }
 
 /** Places a pin via the map-click fallback interaction (see LocationPicker), setting `location`. */
-function setLocationViaMapClick() {
+function setLocationViaMapClick(lat = 48.8566, lng = 2.3522) {
   const map = mapInstances[mapInstances.length - 1]
   act(() => {
     map.handlers['click']?.forEach((handler) =>
-      handler({ lngLat: { lat: 48.8566, lng: 2.3522 } }),
+      handler({ lngLat: { lat, lng } }),
     )
   })
 }
@@ -135,6 +227,10 @@ function clickUpdate() {
 }
 
 describe('App', () => {
+  beforeEach(() => {
+    sceneFlowMounts.length = 0
+  })
+
   it('renders the Solarly heading', () => {
     render(<App />)
     expect(
@@ -327,6 +423,213 @@ describe('App', () => {
       expect(
         screen.queryByText(/couldn't reach the climate service/i),
       ).not.toBeInTheDocument()
+    })
+  })
+
+  describe('"Design in 3D" entry point and overlay (issue #60)', () => {
+    it('disables the entry point until a location is set, then enables it', () => {
+      render(<App />)
+      expect(
+        screen.getByRole('button', { name: 'Design in 3D' }),
+      ).toBeDisabled()
+
+      setLocationViaMapClick()
+
+      expect(screen.getByRole('button', { name: 'Design in 3D' })).toBeEnabled()
+    })
+
+    it('opens the overlay, passing the resolved location through', () => {
+      render(<App />)
+      setLocationViaMapClick()
+
+      expect(screen.queryByTestId('scene-editor-flow')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+
+      const overlay = screen.getByTestId('scene-editor-flow')
+      expect(overlay).toBeInTheDocument()
+      expect(overlay).toHaveAttribute('data-lat', '48.8566')
+    })
+
+    it('closes the overlay via onClose, and reopening still shows "Design in 3D" (no scene applied yet)', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+      fireEvent.click(screen.getByRole('button', { name: 'close-scene' }))
+
+      expect(screen.queryByTestId('scene-editor-flow')).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Design in 3D' }),
+      ).toBeInTheDocument()
+    })
+
+    describe('resetting the scene on a location change (PR #70 review finding 3)', () => {
+      it('clears the sidebar "Edit scene" summary and closes the overlay when location changes with a scene in progress', () => {
+        render(<App />)
+        setLocationViaMapClick()
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+
+        // Scene in progress: button relabels and a summary appears.
+        expect(
+          screen.getByRole('button', { name: 'Edit scene' }),
+        ).toBeInTheDocument()
+        expect(screen.getByText(/1 shape traced/)).toBeInTheDocument()
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+
+        // Repick a different location — mirrors "trace a roof in Berlin,
+        // then repick Paris" from the reviewer's repro.
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        // Overlay closed and the stale scene summary is gone: the entry
+        // point reverts to "Design in 3D" rather than continuing to
+        // advertise the previous location's traced shape.
+        expect(
+          screen.queryByTestId('scene-editor-flow'),
+        ).not.toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Design in 3D' }),
+        ).toBeInTheDocument()
+        expect(
+          screen.queryByRole('button', { name: 'Edit scene' }),
+        ).not.toBeInTheDocument()
+        expect(screen.queryByText(/shape traced/)).not.toBeInTheDocument()
+      })
+
+      it('forces a fresh SceneEditorFlow instance (remount) on a location change, not just a prop update', () => {
+        render(<App />)
+        setLocationViaMapClick()
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        // A prop update alone (same mounted instance) would leave this at
+        // 1 — a new entry means `SceneEditorFlow` was actually remounted
+        // with a clean internal-state slate, per `handleLocationChange`'s
+        // doc comment in `App.tsx`.
+        expect(sceneFlowMounts).toHaveLength(2)
+        expect(sceneFlowMounts.at(-1)).toEqual({ lat: 41.9028 })
+      })
+
+      it('does not reset the scene when location is set for the first time (no prior scene)', () => {
+        render(<App />)
+        setLocationViaMapClick()
+
+        // Only one mount so far, from the initial location being set.
+        expect(sceneFlowMounts).toHaveLength(1)
+      })
+    })
+  })
+
+  describe('applying a scene, sidebar summary, and manual/scene toggle (issue #61)', () => {
+    function applyScene() {
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+      fireEvent.click(screen.getByRole('button', { name: 'apply-scene' }))
+    }
+
+    it('replaces the manual form with a compact summary once a scene is applied, and closes the overlay', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+
+      expect(screen.queryByTestId('scene-editor-flow')).not.toBeInTheDocument()
+      expect(screen.getByText('2 arrays, 42 panels total')).toBeInTheDocument()
+      expect(
+        screen.queryByRole('form', { name: 'System configuration' }),
+      ).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Edit scene' })).toBeEnabled()
+    })
+
+    it('feeds the applied scene SystemConfig into the simulation instead of the manual form output', async () => {
+      runTmySimulation.mockResolvedValueOnce(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      clickUpdate()
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemConfig: expect.objectContaining({
+            arrays: expect.arrayContaining([
+              expect.objectContaining({ panelCount: 20 }),
+              expect.objectContaining({ panelCount: 22 }),
+            ]),
+          }),
+        }),
+      )
+    })
+
+    it('lets the user switch back to the manual form, which then feeds the simulation again', async () => {
+      runTmySimulation.mockResolvedValue(makeTmyResult([makeMonth(1, 500)]))
+
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use manual form instead' }),
+      )
+
+      // The manual form (and the entry point) are back, in place of the
+      // compact summary.
+      expect(
+        screen.getByRole('form', { name: 'System configuration' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText('2 arrays, 42 panels total'),
+      ).not.toBeInTheDocument()
+      // The manual form still has its own sensible default values and is
+      // usable immediately.
+      clickUpdate()
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(runTmySimulation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemConfig: expect.objectContaining({
+            arrays: [expect.objectContaining({ panelCount: 10 })],
+          }),
+        }),
+      )
+    })
+
+    it('lets the user switch from the manual form back to a previously-applied scene', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use manual form instead' }),
+      )
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Use applied scene (2 arrays)' }),
+      )
+
+      expect(screen.getByText('2 arrays, 42 panels total')).toBeInTheDocument()
+    })
+
+    it('clears the applied scene and reverts to the manual form on a location change', () => {
+      render(<App />)
+      setLocationViaMapClick()
+      applyScene()
+      expect(screen.getByText('2 arrays, 42 panels total')).toBeInTheDocument()
+
+      setLocationViaMapClick(41.9028, 12.4964)
+
+      expect(
+        screen.queryByText('2 arrays, 42 panels total'),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('form', { name: 'System configuration' }),
+      ).toBeInTheDocument()
     })
   })
 })
