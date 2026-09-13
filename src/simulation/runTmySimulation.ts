@@ -28,6 +28,7 @@ import type {
   HourlyPoint,
   Location,
   MonthlySimulation,
+  PanelArrayConfig,
   TmySimulationResult,
   SystemConfig,
 } from './types.ts'
@@ -75,6 +76,15 @@ function combinedLossesPercent(
   const retention =
     (1 - systemLossesPercent / 100) * (1 - manualShadingPercent / 100)
   return (1 - retention) * 100
+}
+
+/** Converts a {@link PanelArrayConfig} into the `PanelSpec` shape `panelPowerOutput` expects. */
+function toPanelSpec(array: PanelArrayConfig) {
+  return {
+    ratedWattsPeak: array.panelCount * array.wattsPerPanel,
+    efficiencyPercent: array.efficiencyPercent,
+    tempCoefficientPercentPerC: array.tempCoefficientPercentPerC,
+  }
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -282,34 +292,45 @@ function simulateMonth(
       )
     : 0
 
-  const ratedWattsPeak = systemConfig.panelCount * systemConfig.wattsPerPanel
-  const panelSpec = {
-    ratedWattsPeak,
-    efficiencyPercent: systemConfig.efficiencyPercent,
-    tempCoefficientPercentPerC: systemConfig.tempCoefficientPercentPerC,
-  }
-  const lossesPercent = combinedLossesPercent(
-    systemConfig.systemLossesPercent,
-    systemConfig.manualShadingPercent,
+  const totalPanelCount = systemConfig.arrays.reduce(
+    (sum, array) => sum + array.panelCount,
+    0,
   )
 
   const representativeDayHourly: HourlyPoint[] = clearSkyHourly.map((h) => {
     const estimatedGhiWm2 = h.ghiWm2 * clearnessFactor
     const sun = { altitude: h.sunAlt, azimuth: h.sunAz }
     const decomposed = decomposeGhi(estimatedGhiWm2, sun)
-    const poaIrradianceWm2 = poaIrradiance(
-      { direct: decomposed.directWm2, diffuse: decomposed.diffuseWm2 },
-      sun,
-      systemConfig.tiltDeg,
-      systemConfig.azimuthDeg,
-    )
-    const powerW = panelPowerOutput(
-      poaIrradianceWm2,
-      panelSpec,
-      normal.temperatureC,
-      lossesPercent,
-    )
-    return { hour: h.hour, poaIrradianceWm2, powerW }
+
+    let totalPowerW = 0
+    let weightedPoaIrradianceWm2 = 0
+    for (const array of systemConfig.arrays) {
+      const arrayPoaIrradianceWm2 = poaIrradiance(
+        { direct: decomposed.directWm2, diffuse: decomposed.diffuseWm2 },
+        sun,
+        array.tiltDeg,
+        array.azimuthDeg,
+      )
+      const powerW = panelPowerOutput(
+        arrayPoaIrradianceWm2,
+        toPanelSpec(array),
+        normal.temperatureC,
+        combinedLossesPercent(
+          systemConfig.systemLossesPercent,
+          array.manualShadingPercent,
+        ),
+      )
+      totalPowerW += powerW
+      // Panel-count-weighted average across arrays — a display/diagnostic
+      // aggregate only (see `HourlyPoint.poaIrradianceWm2`'s doc comment);
+      // it isn't fed back into the power calculation above, which already
+      // used each array's own POA irradiance.
+      weightedPoaIrradianceWm2 += arrayPoaIrradianceWm2 * array.panelCount
+    }
+    const poaIrradianceWm2 =
+      totalPanelCount > 0 ? weightedPoaIrradianceWm2 / totalPanelCount : 0
+
+    return { hour: h.hour, poaIrradianceWm2, powerW: totalPowerW }
   })
 
   // Same "hourly sample = hourly average" convention as the clear-sky

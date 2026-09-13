@@ -8,14 +8,18 @@ import type {
 
 const BASE_LOCATION = { lat: 45, lon: 10 }
 const BASE_SYSTEM_CONFIG = {
-  tiltDeg: 30,
-  azimuthDeg: 180,
-  panelCount: 10,
-  wattsPerPanel: 400,
-  efficiencyPercent: 20,
-  tempCoefficientPercentPerC: -0.35,
+  arrays: [
+    {
+      tiltDeg: 30,
+      azimuthDeg: 180,
+      panelCount: 10,
+      wattsPerPanel: 400,
+      efficiencyPercent: 20,
+      tempCoefficientPercentPerC: -0.35,
+      manualShadingPercent: 0,
+    },
+  ],
   systemLossesPercent: 14,
-  manualShadingPercent: 0,
 }
 
 function makeMonth(month: number, monthlyTotalKWh: number): MonthlySimulation {

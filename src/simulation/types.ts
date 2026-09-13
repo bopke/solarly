@@ -29,20 +29,26 @@ export interface Location {
 }
 
 /**
- * User-editable PV system configuration, as collected by the system-config
- * form (issue #13). Field names/shape are kept consistent with
+ * Configuration for a single physical panel array — one tilt/azimuth/panel
+ * grouping. Field names/shape are kept consistent with
  * `src/ui/SystemConfigForm`'s `SystemConfig` type (issue #13 / PR #28), with
  * `panelCount` + `wattsPerPanel` replacing that type's single-preset framing
  * so this module doesn't need to depend on `panel-presets/` or `ui/` — per
- * the settled project-owner decision (see issue #9), the simulation's rated
- * system capacity is `panelCount * wattsPerPanel`.
+ * the settled project-owner decision (see issue #9), an array's rated
+ * capacity is `panelCount * wattsPerPanel`.
+ *
+ * One `SystemConfig.arrays` entry per real roof face / ground-mount plot —
+ * see the M2 design spec's "Data flow and the multi-array model" section
+ * (`docs/superpowers/specs/2026-09-13-solarly-m2-design.md`) for the
+ * motivation (the 3D scene editor produces one entry per traced shape) and
+ * issue #54 for the generalization from the M1 flat single-array shape.
  */
-export interface SystemConfig {
+export interface PanelArrayConfig {
   /** Panel tilt from horizontal, in degrees (0 = flat, 90 = vertical). */
   tiltDeg: number
   /** Panel azimuth, in degrees clockwise from true north (180 = due south). */
   azimuthDeg: number
-  /** Number of panels in the array. */
+  /** Number of panels in this array. */
   panelCount: number
   /** Rated power per panel at STC, in watts-peak. */
   wattsPerPanel: number
@@ -53,16 +59,38 @@ export interface SystemConfig {
   efficiencyPercent: number
   /** Temperature coefficient of power (Pmax), in %/°C. Negative for real panels. */
   tempCoefficientPercentPerC: number
-  /** Aggregate system losses (wiring, inverter, soiling, mismatch, etc.), as a percentage. */
-  systemLossesPercent: number
   /**
    * Manual shading derate, as a percentage — a user-estimated stand-in for
    * real geometric shadow-casting (deferred to M3, see the M1 design spec's
-   * roadmap section). Stacked multiplicatively with `systemLossesPercent`,
-   * as a second independent derate factor rather than summed with it — see
-   * `docs/decisions/0080-tmy-disaggregation-approach.md`.
+   * roadmap section). Stacked multiplicatively with `SystemConfig`'s
+   * `systemLossesPercent`, as a second independent derate factor rather
+   * than summed with it — see
+   * `docs/decisions/0080-tmy-disaggregation-approach.md`. Per-array since
+   * different arrays (e.g. differently-oriented roof faces) can be shaded
+   * differently.
    */
   manualShadingPercent: number
+}
+
+/**
+ * User-editable PV system configuration: one or more physical panel arrays
+ * plus system-wide losses. Generalized from a flat single-array object to
+ * this multi-array shape in issue #54 — see the M2 design spec's "Data flow
+ * and the multi-array model" section
+ * (`docs/superpowers/specs/2026-09-13-solarly-m2-design.md`) for the full
+ * rationale. `src/ui/SystemConfigForm` (single-array UI) adapts its output
+ * into a single-element `arrays` array; the M2 3D scene editor will produce
+ * one entry per traced shape.
+ */
+export interface SystemConfig {
+  /** The system's physical panel arrays. At least one entry. */
+  arrays: PanelArrayConfig[]
+  /**
+   * Aggregate system-wide losses (wiring, inverter, soiling, mismatch,
+   * etc.), as a percentage. Not per-array, since it isn't meaningfully a
+   * property of an individual array — see the M2 design spec.
+   */
+  systemLossesPercent: number
 }
 
 /** One point of an hourly power time series. */
@@ -83,7 +111,13 @@ export interface HourlyPowerPoint {
 export interface HourlyPoint {
   /** Hour of day, 0-23, in local solar time (approximated as a longitude offset from UTC — see the ADR's note on the representative-day convention). */
   hour: number
-  /** Plane-of-array irradiance for this hour, in W/m². */
+  /**
+   * Plane-of-array irradiance for this hour, in W/m². For a multi-array
+   * `SystemConfig`, this is a panel-count-weighted average across arrays —
+   * a display/diagnostic aggregate only, not fed back into `powerW` (each
+   * array's own POA irradiance is used for its own power contribution
+   * before summing) — see `runTmySimulation`'s `simulateMonth`.
+   */
   poaIrradianceWm2: number
   /** Panel array power output for this hour, in watts. */
   powerW: number
