@@ -234,7 +234,7 @@ describe('LocationPicker', () => {
 
     const map = mapInstances[0]
     expect(map.center).toEqual([berlinResult.lon, berlinResult.lat])
-    expect(map.zoom).toBe(11)
+    expect(map.zoom).toBe(17)
   })
 
   it('creates a marker when a search result is selected', async () => {
@@ -341,7 +341,7 @@ describe('LocationPicker', () => {
 
     // Map click is a coarse-exploration interaction: it must not recenter
     // or force a zoom change (regression for the "every pin placement
-    // forces zoom 11" bug).
+    // forces the resolved zoom" bug).
     expect(map.center).toEqual(centerBeforeClick)
     expect(map.zoom).toBe(zoomBeforeClick)
   })

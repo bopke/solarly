@@ -41,7 +41,10 @@ const DEFAULT_ZOOM = 1.5
 // clicks and pin drags intentionally do NOT use this: the user is already
 // looking at the area they want, so forcing a recenter/zoom on every click
 // or drag fights the user (see docs/decisions/0012-location-picker.md).
-const RESOLVED_ZOOM = 11
+// Individual-building level: the tool exists so users can identify their
+// own house/plot, not just their neighborhood, so we zoom in close enough
+// to see buildings rather than stopping at a city/district-level view.
+const RESOLVED_ZOOM = 17
 
 function resolveFromCoords(lat: number, lon: number): ResolvedLocation {
   return { lat, lon, utcOffsetHours: approximateTimezone(lon) }
