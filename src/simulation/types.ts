@@ -200,3 +200,69 @@ export interface LiveSimulationResult {
  * can narrow on `mode` to get the shape appropriate to each — see ADR 0016.
  */
 export type SimulationResult = TmySimulationResult | LiveSimulationResult
+
+/**
+ * A point in 3D local meters: x = east, y = north, z = up (ENU). This is a
+ * deliberate structural duplicate of `scene/derive/polygonToExtrusionGeometry`'s
+ * own `Vec3` (and `solar-physics`'s, used by M3's shadow-casting primitives)
+ * rather than an import of either — `simulation/types.ts` stays a plain-data
+ * module with no dependency on `scene/`'s or `solar-physics`'s internals, the
+ * same call made for `scene/tracing`'s `LatLon` vs. `data-sources`' location
+ * types (see issue #66's tracked follow-up). All three `Vec3` shapes are
+ * structurally identical by construction, so values flow between them with
+ * no conversion needed.
+ */
+export interface Vec3 {
+  x: number
+  y: number
+  z: number
+}
+
+/**
+ * The geometric scene M3's shadow-casting reads: every traced shape's real
+ * 3D extruded plane, every placed obstruction, and every real panel's 3D
+ * position — all in one shared scene-local ENU-meters coordinate frame (see
+ * `scene/apply/deriveSceneGeometry.ts`'s doc comment for exactly how that
+ * frame is established and how each field is derived from
+ * `SceneDesignState`).
+ *
+ * Plain, serializable data — `simulation/` has no dependency on `scene/`
+ * code, this type just flows in as data alongside `SystemConfig`, the same
+ * way `SystemConfig` itself already flows in from `scene/apply/` today (see
+ * `deriveSystemConfigFromScene`). Optional on `runTmySimulation`/
+ * `runLiveSimulation`'s inputs — see the M3 design spec's "Simulation loop
+ * changes" section (issue #77) for how the per-hour loop uses it once
+ * supplied; building this type and its derivation is this issue's (#75)
+ * entire scope, using it in the simulation loop is out of scope here.
+ */
+export interface SceneGeometry {
+  /**
+   * One entry per traced shape with resolvable geometry (a valid
+   * tilt/azimuth config — see `deriveSceneGeometryFromScene`'s doc for what
+   * "resolvable" means), each shape's real extruded 3D plane vertices, in
+   * the shared scene-local ENU-meters frame described above. `id` matches
+   * the traced shape's own id (`SceneDesignState.tracedShapes[].id`), the
+   * same keying `SceneDesignState.shapeConfigs`/`panelLayouts` already use.
+   */
+  shapes: { id: string; vertices: Vec3[] }[]
+  /**
+   * Every placed obstruction (tree/building), read directly from
+   * `SceneDesignState.obstructions` — already in the shared scene-local
+   * frame with no translation needed (see `Obstruction.position`'s own doc
+   * comment), so this is close to a direct field-for-field copy.
+   */
+  obstructions: {
+    kind: 'tree' | 'building'
+    position: { x: number; y: number }
+    heightM: number
+    radiusM: number
+  }[]
+  /**
+   * One entry per real panel across every shape's panel layout — each
+   * panel's actual 3D center position (on its shape's tilted plane), in the
+   * shared scene-local ENU-meters frame, keyed by the shape it belongs to
+   * (`shapeId`, matching `shapes[].id` above) so a per-array consumer (issue
+   * #77) can filter panels to just the array being simulated.
+   */
+  panels: { shapeId: string; position: Vec3 }[]
+}

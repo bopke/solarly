@@ -4,3 +4,5 @@ export {
   DEFAULT_SCENE_SYSTEM_LOSSES_PERCENT,
   type DeriveSystemConfigOptions,
 } from './deriveSystemConfig'
+
+export { deriveSceneGeometryFromScene } from './deriveSceneGeometry'

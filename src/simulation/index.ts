@@ -20,4 +20,6 @@ export type {
   SimulationResult,
   TmySimulationResult,
   LiveSimulationResult,
+  Vec3,
+  SceneGeometry,
 } from './types.ts'
