@@ -22,3 +22,4 @@ export {
   rayPolygonIntersection,
 } from './shadowOcclusion'
 export type { Obstacle, Vec3 } from './shadowOcclusion'
+export { sunAltitudeAzimuthToEnuDirection } from './sunDirection'
