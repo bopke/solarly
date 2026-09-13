@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { runLiveSimulation } from './runLiveSimulation'
 import type { HourlyClimate } from '../data-sources'
-import type { PanelArrayConfig, SystemConfig } from './types'
+import { sunPosition } from '../solar-physics'
+import type { PanelArrayConfig, SceneGeometry, SystemConfig } from './types'
 
 /**
  * Fixture climate data: two synthetic summer days at Berlin's latitude
@@ -383,6 +384,136 @@ describe('runLiveSimulation', () => {
       // Same golden reference values as the single-array test above,
       // independently verified against pvlib — confirms summing over an
       // array of length one is a byte-identical no-op.
+      expect(middayWatts).toBeCloseTo(4180.5, 1)
+      expect(eveningWatts).toBeCloseTo(558.4, 1)
+    })
+  })
+
+  describe('scene geometry (M3 per-panel occlusion, issue #77)', () => {
+    /** Half-width of Open-Meteo's hourly averaging window (see `GHI_INTERVAL_MIDPOINT_OFFSET_MS`, not exported), replicated so this test can compute the exact sun position `hourlyPowerPoint` uses internally. */
+    const GHI_INTERVAL_MIDPOINT_OFFSET_MS = 30 * 60 * 1000
+
+    /**
+     * Builds a 'building' obstruction guaranteed to occlude a panel at the
+     * scene origin from the sun at `sunAlt`/`sunAz` — same construction as
+     * `runTmySimulation.test.ts`'s equivalent helper: placed along the
+     * sun's exact horizontal direction, tall enough that the ray from the
+     * origin toward the sun passes through its volume, with a generous
+     * footprint radius.
+     */
+    function obstructionAlongSun(
+      sunAltDeg: number,
+      sunAzDeg: number,
+      planeDistM = 8,
+    ) {
+      const azRad = (sunAzDeg * Math.PI) / 180
+      const altRad = (sunAltDeg * Math.PI) / 180
+      return {
+        kind: 'building' as const,
+        position: {
+          x: planeDistM * Math.sin(azRad),
+          y: planeDistM * Math.cos(azRad),
+        },
+        heightM: planeDistM * Math.tan(altRad) + 25,
+        radiusM: 6,
+      }
+    }
+
+    const ROOF_VERTICES = [
+      { x: -3, y: -3, z: 0 },
+      { x: 3, y: -3, z: 0 },
+      { x: 3, y: 3, z: 0 },
+      { x: -3, y: 3, z: 0 },
+    ]
+
+    const SCENE_ARRAY: PanelArrayConfig = {
+      ...ARRAY_CONFIG,
+      panelCount: 1,
+      manualShadingPercent: 0,
+      shapeId: 'roof',
+    }
+    const SCENE_SYSTEM: SystemConfig = {
+      arrays: [SCENE_ARRAY],
+      systemLossesPercent: 14,
+    }
+
+    function sceneGeometryWithObstruction(
+      obstructions: SceneGeometry['obstructions'],
+    ): SceneGeometry {
+      return {
+        shapes: [{ id: 'roof', vertices: ROOF_VERTICES }],
+        obstructions,
+        panels: [{ shapeId: 'roof', position: { x: 0, y: 0, z: 1 } }],
+      }
+    }
+
+    const MIDDAY_TIMESTAMP = '2026-06-21T12:00:00Z'
+
+    it('an hour with a known-occluded sun angle produces less power than the same hour with the obstruction removed, and never fully zero (diffuse survives)', async () => {
+      const midpointInstant = new Date(
+        new Date(MIDDAY_TIMESTAMP).getTime() - GHI_INTERVAL_MIDPOINT_OFFSET_MS,
+      )
+      const sun = sunPosition(BERLIN.lat, BERLIN.lon, midpointInstant)
+      expect(sun.altitude).toBeGreaterThan(0) // sanity: a daytime hour
+
+      const obstruction = obstructionAlongSun(sun.altitude, sun.azimuth)
+      const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
+
+      const occludedResult = await runLiveSimulation(
+        {
+          location: BERLIN,
+          systemConfig: SCENE_SYSTEM,
+          sceneGeometry: sceneGeometryWithObstruction([obstruction]),
+        },
+        deps,
+      )
+      const unoccludedResult = await runLiveSimulation(
+        {
+          location: BERLIN,
+          systemConfig: SCENE_SYSTEM,
+          sceneGeometry: sceneGeometryWithObstruction([]),
+        },
+        deps,
+      )
+
+      const occludedMidday = occludedResult.hourlyWattsSeries.find(
+        (p) => p.timestamp === MIDDAY_TIMESTAMP,
+      )!
+      const unoccludedMidday = unoccludedResult.hourlyWattsSeries.find(
+        (p) => p.timestamp === MIDDAY_TIMESTAMP,
+      )!
+
+      expect(occludedMidday.watts).toBeLessThan(unoccludedMidday.watts)
+      expect(occludedMidday.watts).toBeGreaterThan(0)
+    })
+
+    it('an array with no shapeId is unaffected by sceneGeometry (manual form path stays on manualShadingPercent), matching the exact pinned golden values', async () => {
+      const midpointInstant = new Date(
+        new Date(MIDDAY_TIMESTAMP).getTime() - GHI_INTERVAL_MIDPOINT_OFFSET_MS,
+      )
+      const sun = sunPosition(BERLIN.lat, BERLIN.lon, midpointInstant)
+      const obstruction = obstructionAlongSun(sun.altitude, sun.azimuth)
+      const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
+
+      const result = await runLiveSimulation(
+        {
+          location: BERLIN,
+          systemConfig: SYSTEM_CONFIG, // no shapeId on its array
+          sceneGeometry: sceneGeometryWithObstruction([obstruction]),
+        },
+        deps,
+      )
+
+      const middayWatts = result.hourlyWattsSeries.find(
+        (p) => p.timestamp === MIDDAY_TIMESTAMP,
+      )!.watts
+      const eveningWatts = result.hourlyWattsSeries.find(
+        (p) => p.timestamp === '2026-06-21T18:00:00Z',
+      )!.watts
+
+      // Exact same pinned golden values as the byte-identical regression
+      // test above — sceneGeometry present but not matching this array's
+      // (absent) shapeId has zero effect.
       expect(middayWatts).toBeCloseTo(4180.5, 1)
       expect(eveningWatts).toBeCloseTo(558.4, 1)
     })

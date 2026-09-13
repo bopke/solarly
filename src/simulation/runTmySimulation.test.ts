@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { MonthlyClimateNormal } from '../data-sources/index.ts'
+import { sunPosition } from '../solar-physics/index.ts'
 import {
   buildTmySimulationResult,
   MAX_CLEARNESS_FACTOR,
   REFERENCE_YEAR,
 } from './runTmySimulation.ts'
-import type { PanelArrayConfig, SystemConfig } from './types.ts'
+import type { PanelArrayConfig, SceneGeometry, SystemConfig } from './types.ts'
 
 /**
  * Fixture climate normals loosely modeled on NASA POWER climatology for a
@@ -492,6 +493,143 @@ describe('buildTmySimulationResult', () => {
       const kWhPerKWp = result.annualTotalKWh / 8 // 20 panels * 400W = 8kWp
       expect(kWhPerKWp).toBeGreaterThan(1500)
       expect(kWhPerKWp).toBeLessThan(2200)
+    })
+  })
+
+  describe('scene geometry (M3 per-panel occlusion, issue #77)', () => {
+    /** Local-solar-noon hour used by every representative day (see `REPRESENTATIVE_DAY_OF_MONTH`/`computeClearSkyHourly`). */
+    const REPRESENTATIVE_HOUR = 12
+    const REPRESENTATIVE_DAY = 15
+
+    /**
+     * Replicates `computeClearSkyHourly`'s local-solar-time timestamp
+     * construction (not exported) so this test can call `sunPosition`
+     * itself and derive a fixture obstruction guaranteed to intersect the
+     * exact ray the simulation will actually cast for local-solar noon of
+     * a given month — rather than guessing a plausible-looking building
+     * size and hoping it lines up with the real sun angle.
+     */
+    function localSolarNoonSunPosition(
+      location: { lat: number; lon: number },
+      month: number,
+    ) {
+      const localSolarOffsetMs = -(location.lon / 15) * 3_600_000
+      const timestamp = new Date(
+        Date.UTC(
+          REFERENCE_YEAR,
+          month - 1,
+          REPRESENTATIVE_DAY,
+          REPRESENTATIVE_HOUR,
+        ) + localSolarOffsetMs,
+      )
+      return sunPosition(location.lat, location.lon, timestamp)
+    }
+
+    /**
+     * Builds a 'building' obstruction guaranteed to occlude a panel at the
+     * scene origin from the sun at `sunAlt`/`sunAz`: placed along the
+     * sun's exact horizontal direction at `planeDistM` meters, tall enough
+     * (`planeDistM * tan(altitude) + margin`) that the ray from the origin
+     * toward the sun passes through its volume well before exiting the
+     * top, with a generous footprint radius so small floating-point drift
+     * in the geometry can't make it miss.
+     */
+    function obstructionAlongSun(
+      sunAltDeg: number,
+      sunAzDeg: number,
+      planeDistM = 8,
+    ) {
+      const azRad = (sunAzDeg * Math.PI) / 180
+      const altRad = (sunAltDeg * Math.PI) / 180
+      return {
+        kind: 'building' as const,
+        position: {
+          x: planeDistM * Math.sin(azRad),
+          y: planeDistM * Math.cos(azRad),
+        },
+        heightM: planeDistM * Math.tan(altRad) + 25,
+        radiusM: 6,
+      }
+    }
+
+    const ROOF_VERTICES = [
+      { x: -3, y: -3, z: 0 },
+      { x: 3, y: -3, z: 0 },
+      { x: 3, y: 3, z: 0 },
+      { x: -3, y: 3, z: 0 },
+    ]
+
+    /** Same fixture location/array as the rest of this file, but with a `shapeId` so the M3 occlusion path applies. */
+    const SCENE_ARRAY: PanelArrayConfig = {
+      ...RESIDENTIAL_ARRAY,
+      panelCount: 1,
+      shapeId: 'roof',
+    }
+    const SCENE_SYSTEM: SystemConfig = {
+      arrays: [SCENE_ARRAY],
+      systemLossesPercent: 14,
+    }
+
+    function sceneGeometryWithObstruction(
+      obstructions: SceneGeometry['obstructions'],
+    ): SceneGeometry {
+      return {
+        shapes: [{ id: 'roof', vertices: ROOF_VERTICES }],
+        obstructions,
+        panels: [{ shapeId: 'roof', position: { x: 0, y: 0, z: 1 } }],
+      }
+    }
+
+    it('an hour with a known-occluded sun angle produces less power than the same hour with the obstruction removed, and never fully zero (diffuse survives)', () => {
+      const sun = localSolarNoonSunPosition(SUNNY_LOCATION, 12) // December
+      expect(sun.altitude).toBeGreaterThan(0) // sanity: this is a daytime hour
+
+      const obstruction = obstructionAlongSun(sun.altitude, sun.azimuth)
+
+      const occludedResult = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        SCENE_SYSTEM,
+        SUNNY_LOCATION_NORMALS,
+        REFERENCE_YEAR,
+        sceneGeometryWithObstruction([obstruction]),
+      )
+      const unoccludedResult = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        SCENE_SYSTEM,
+        SUNNY_LOCATION_NORMALS,
+        REFERENCE_YEAR,
+        sceneGeometryWithObstruction([]),
+      )
+
+      const occludedNoon = occludedResult.months
+        .find((m) => m.month === 12)!
+        .representativeDayHourly.find((h) => h.hour === REPRESENTATIVE_HOUR)!
+      const unoccludedNoon = unoccludedResult.months
+        .find((m) => m.month === 12)!
+        .representativeDayHourly.find((h) => h.hour === REPRESENTATIVE_HOUR)!
+
+      expect(occludedNoon.powerW).toBeLessThan(unoccludedNoon.powerW)
+      expect(occludedNoon.powerW).toBeGreaterThan(0)
+    })
+
+    it('an array with no shapeId is unaffected by sceneGeometry (manual form path stays on manualShadingPercent)', () => {
+      const sun = localSolarNoonSunPosition(SUNNY_LOCATION, 12)
+      const obstruction = obstructionAlongSun(sun.altitude, sun.azimuth)
+
+      const withoutSceneGeometry = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        RESIDENTIAL_SYSTEM, // no shapeId on its array
+        SUNNY_LOCATION_NORMALS,
+      )
+      const withSceneGeometryButNoShapeIdMatch = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        RESIDENTIAL_SYSTEM,
+        SUNNY_LOCATION_NORMALS,
+        REFERENCE_YEAR,
+        sceneGeometryWithObstruction([obstruction]),
+      )
+
+      expect(withSceneGeometryButNoShapeIdMatch).toEqual(withoutSceneGeometry)
     })
   })
 })

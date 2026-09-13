@@ -70,6 +70,34 @@ export interface PanelArrayConfig {
    * differently.
    */
   manualShadingPercent: number
+  /**
+   * Correlates this array with a `SceneGeometry.shapes`/`panels` entry
+   * (matching `shapes[].id` and `panels[].shapeId`), for M3's per-panel
+   * occlusion loop (issue #77) to find the real panel positions and
+   * exclude this array's own shape from its obstacle list. Optional and
+   * absent for the manual single-array form path (which has no 3D
+   * geometry at all) and for any `SystemConfig` produced before this
+   * field existed.
+   *
+   * Deliberately an explicit id rather than relying on `arrays` and
+   * `SceneGeometry.shapes` sharing the same order/index: `scene/apply`'s
+   * `deriveSystemConfigFromScene` and `deriveSceneGeometryFromScene` skip
+   * shapes on different conditions (a missing step-2 config vs. a missing
+   * config OR ungeometrizable tilt/polygon — see the latter's doc
+   * comment), so the two arrays produced from the same
+   * `SceneDesignState` are not guaranteed to line up positionally. An
+   * explicit id removes that fragility.
+   *
+   * NOTE: as of this field's introduction, `deriveSystemConfigFromScene`
+   * does not yet populate it — that's part of wiring the Apply flow
+   * (issue #78, out of this issue's scope), which will need to set
+   * `shapeId: shape.id` on each derived array alongside the existing
+   * fields. Until then, every real `SystemConfig` produced by `scene/apply/`
+   * has `shapeId: undefined` on every array, so `runTmySimulation`/
+   * `runLiveSimulation` fall back to the pre-M3 `manualShadingPercent`
+   * path for it exactly as before — see this issue's PR description.
+   */
+  shapeId?: string
 }
 
 /**

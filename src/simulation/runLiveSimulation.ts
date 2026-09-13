@@ -13,19 +13,33 @@ import {
   decomposeGhi,
   poaIrradiance,
   panelPowerOutput,
+  sunAltitudeAzimuthToEnuDirection,
 } from '../solar-physics'
 import type { PanelSpec } from '../solar-physics'
+import {
+  computeArrayPowerWithOcclusion,
+  resolveArrayScenePanels,
+  type ArrayScenePanels,
+} from './sceneOcclusion'
 import type {
   HourlyPowerPoint,
   Location,
   LiveSimulationResult,
   PanelArrayConfig,
+  SceneGeometry,
   SystemConfig,
 } from './types'
 
 export interface RunLiveSimulationInput {
   location: Location
   systemConfig: SystemConfig
+  /**
+   * Real 3D scene geometry, for M3's per-panel occlusion loop (issue #77)
+   * — see `RunTmySimulationInput.sceneGeometry`'s doc comment (same
+   * contract: optional and purely additive, falls back to the pre-M3
+   * `manualShadingPercent` shortcut per-array when absent or non-matching).
+   */
+  sceneGeometry?: SceneGeometry
 }
 
 /**
@@ -146,6 +160,28 @@ function toPanelSpec(array: PanelArrayConfig): PanelSpec {
 }
 
 /**
+ * Combines `systemLossesPercent` and `manualShadingPercent` into a single
+ * aggregate loss percentage for `panelPowerOutput`'s/
+ * `computeArrayPowerWithOcclusion`'s `lossesPercent`, by stacking their
+ * retention factors multiplicatively — the same combined-derate math the
+ * non-occlusion path below already applies (there, spread across
+ * `panelPowerOutput`'s own `systemLossesPercent` handling plus a separate
+ * `manualShadingFactor` multiplication; here, folded into one number since
+ * `computeArrayPowerWithOcclusion` takes a single `lossesPercent` per
+ * panel, matching `runTmySimulation.ts`'s identically-named helper). See
+ * ADR 0016 for why manual shading stacks as an independent derate rather
+ * than being summed with system losses.
+ */
+function combinedLossesPercent(
+  systemLossesPercent: number,
+  manualShadingPercent: number,
+): number {
+  const retention =
+    (1 - systemLossesPercent / 100) * (1 - manualShadingPercent / 100)
+  return (1 - retention) * 100
+}
+
+/**
  * Computes hourly panel power output for Live forecast mode: fetches an
  * Open-Meteo hourly forecast for `input.location` and runs each hour's GHI
  * + temperature through the `solar-physics` pipeline
@@ -166,12 +202,24 @@ export async function runLiveSimulation(
   input: RunLiveSimulationInput,
   deps: RunLiveSimulationDeps = defaultDeps,
 ): Promise<LiveSimulationResult> {
-  const { location, systemConfig } = input
+  const { location, systemConfig, sceneGeometry } = input
   validateInput(location, systemConfig)
   const climate = await deps.fetchForecast(location.lat, location.lon)
 
+  // Precomputed once for the whole forecast horizon (rather than once per
+  // hour): each array's real scene panels + obstacle list, or `undefined`
+  // for an array that should keep using the pre-M3 `manualShadingPercent`
+  // shortcut — see `resolveArrayScenePanels`'s doc comment. Neither a
+  // shape's vertices nor an obstruction's geometry change hour-to-hour,
+  // only the sun direction does.
+  const arrayScenePanels = new Map<PanelArrayConfig, ArrayScenePanels>()
+  for (const array of systemConfig.arrays) {
+    const resolved = resolveArrayScenePanels(array, sceneGeometry)
+    if (resolved) arrayScenePanels.set(array, resolved)
+  }
+
   const hourlyWattsSeries: HourlyPowerPoint[] = climate.map((entry) =>
-    hourlyPowerPoint(entry, location, systemConfig),
+    hourlyPowerPoint(entry, location, systemConfig, arrayScenePanels),
   )
 
   return {
@@ -185,6 +233,7 @@ function hourlyPowerPoint(
   entry: HourlyClimate,
   location: Location,
   systemConfig: SystemConfig,
+  arrayScenePanels: Map<PanelArrayConfig, ArrayScenePanels>,
 ): HourlyPowerPoint {
   const stampedInstant = new Date(entry.timestamp)
   // Compute sun position at the interval midpoint, not the HH:00Z stamp
@@ -194,9 +243,33 @@ function hourlyPowerPoint(
   )
 
   const sunPos = sunPosition(location.lat, location.lon, midpointInstant)
-  const { directWm2, diffuseWm2 } = decomposeGhi(entry.ghiWm2, sunPos)
+  const decomposed = decomposeGhi(entry.ghiWm2, sunPos)
+  const { directWm2, diffuseWm2 } = decomposed
+  const sunDirection = arrayScenePanels.size
+    ? sunAltitudeAzimuthToEnuDirection(sunPos.altitude, sunPos.azimuth)
+    : undefined
 
   const watts = systemConfig.arrays.reduce((sum, array) => {
+    const geometry = arrayScenePanels.get(array)
+    if (geometry && sunDirection) {
+      const powerW = computeArrayPowerWithOcclusion(
+        array,
+        geometry,
+        {
+          altitudeDeg: sunPos.altitude,
+          azimuthDeg: sunPos.azimuth,
+          direction: sunDirection,
+        },
+        decomposed,
+        entry.temperatureC,
+        combinedLossesPercent(
+          systemConfig.systemLossesPercent,
+          array.manualShadingPercent,
+        ),
+      )
+      return sum + Math.max(powerW, 0)
+    }
+
     const poa = poaIrradiance(
       { direct: directWm2, diffuse: diffuseWm2 },
       sunPos,

@@ -18,17 +18,24 @@ import {
   decomposeGhi,
   panelPowerOutput,
   poaIrradiance,
+  sunAltitudeAzimuthToEnuDirection,
   sunPosition,
 } from '../solar-physics/index.ts'
 import {
   fetchNasaPowerClimateNormals,
   type MonthlyClimateNormal,
 } from '../data-sources/index.ts'
+import {
+  computeArrayPowerWithOcclusion,
+  resolveArrayScenePanels,
+  type ArrayScenePanels,
+} from './sceneOcclusion.ts'
 import type {
   HourlyPoint,
   Location,
   MonthlySimulation,
   PanelArrayConfig,
+  SceneGeometry,
   TmySimulationResult,
   SystemConfig,
 } from './types.ts'
@@ -60,6 +67,16 @@ const HOURS_PER_DAY = 24
 export interface RunTmySimulationInput {
   location: Location
   systemConfig: SystemConfig
+  /**
+   * Real 3D scene geometry (traced shapes, obstructions, and real panel
+   * positions), for M3's per-panel occlusion loop (issue #77) — see the M3
+   * design spec's "Simulation loop changes". Optional and purely additive:
+   * when absent, or when a given array's `shapeId` has no corresponding
+   * entry in `sceneGeometry.shapes`, that array's power is computed via
+   * the pre-M3 `manualShadingPercent` flat-derate shortcut, byte-identical
+   * to before this parameter existed.
+   */
+  sceneGeometry?: SceneGeometry
 }
 
 /**
@@ -253,6 +270,7 @@ function simulateMonth(
   systemConfig: SystemConfig,
   normal: MonthlyClimateNormal,
   referenceYear: number,
+  sceneGeometry: SceneGeometry | undefined,
 ): MonthlySimulation {
   const day = REPRESENTATIVE_DAY_OF_MONTH
   const monthDaysInMonth = daysInMonth(referenceYear, normal.month)
@@ -297,34 +315,68 @@ function simulateMonth(
     0,
   )
 
+  // Precomputed once per month (rather than recomputed every hour): each
+  // array's real scene panels + obstacle list, keyed by array object
+  // identity, or `undefined` for an array that should keep using the
+  // pre-M3 `manualShadingPercent` shortcut (see `resolveArrayScenePanels`'s
+  // doc comment for exactly which arrays fall back). Neither a shape's
+  // vertices nor an obstruction's geometry change hour-to-hour, only the
+  // sun direction does, so this is invariant across `clearSkyHourly.map`
+  // below.
+  const arrayScenePanels = new Map<PanelArrayConfig, ArrayScenePanels>()
+  for (const array of systemConfig.arrays) {
+    const resolved = resolveArrayScenePanels(array, sceneGeometry)
+    if (resolved) arrayScenePanels.set(array, resolved)
+  }
+
   const representativeDayHourly: HourlyPoint[] = clearSkyHourly.map((h) => {
     const estimatedGhiWm2 = h.ghiWm2 * clearnessFactor
     const sun = { altitude: h.sunAlt, azimuth: h.sunAz }
     const decomposed = decomposeGhi(estimatedGhiWm2, sun)
+    const sunDirection = arrayScenePanels.size
+      ? sunAltitudeAzimuthToEnuDirection(h.sunAlt, h.sunAz)
+      : undefined
 
     let totalPowerW = 0
     let weightedPoaIrradianceWm2 = 0
     for (const array of systemConfig.arrays) {
+      // Always computed, occlusion-agnostic — this is a display/diagnostic
+      // aggregate only (see `HourlyPoint.poaIrradianceWm2`'s doc comment),
+      // never fed into the power calculation below.
       const arrayPoaIrradianceWm2 = poaIrradiance(
         { direct: decomposed.directWm2, diffuse: decomposed.diffuseWm2 },
         sun,
         array.tiltDeg,
         array.azimuthDeg,
       )
-      const powerW = panelPowerOutput(
-        arrayPoaIrradianceWm2,
-        toPanelSpec(array),
-        normal.temperatureC,
-        combinedLossesPercent(
-          systemConfig.systemLossesPercent,
-          array.manualShadingPercent,
-        ),
+
+      const geometry = arrayScenePanels.get(array)
+      const lossesPercent = combinedLossesPercent(
+        systemConfig.systemLossesPercent,
+        array.manualShadingPercent,
       )
+      const powerW =
+        geometry && sunDirection
+          ? computeArrayPowerWithOcclusion(
+              array,
+              geometry,
+              {
+                altitudeDeg: h.sunAlt,
+                azimuthDeg: h.sunAz,
+                direction: sunDirection,
+              },
+              decomposed,
+              normal.temperatureC,
+              lossesPercent,
+            )
+          : panelPowerOutput(
+              arrayPoaIrradianceWm2,
+              toPanelSpec(array),
+              normal.temperatureC,
+              lossesPercent,
+            )
       totalPowerW += powerW
-      // Panel-count-weighted average across arrays — a display/diagnostic
-      // aggregate only (see `HourlyPoint.poaIrradianceWm2`'s doc comment);
-      // it isn't fed back into the power calculation above, which already
-      // used each array's own POA irradiance.
+      // Panel-count-weighted average across arrays — see the comment above.
       weightedPoaIrradianceWm2 += arrayPoaIrradianceWm2 * array.panelCount
     }
     const poaIrradianceWm2 =
@@ -363,10 +415,17 @@ export function buildTmySimulationResult(
   systemConfig: SystemConfig,
   normals: MonthlyClimateNormal[],
   referenceYear: number = REFERENCE_YEAR,
+  sceneGeometry?: SceneGeometry,
 ): TmySimulationResult {
   const months = normals
     .map((normal) =>
-      simulateMonth(location, systemConfig, normal, referenceYear),
+      simulateMonth(
+        location,
+        systemConfig,
+        normal,
+        referenceYear,
+        sceneGeometry,
+      ),
     )
     .sort((a, b) => a.month - b.month)
 
@@ -397,11 +456,18 @@ export function buildTmySimulationResult(
 export async function runTmySimulation({
   location,
   systemConfig,
+  sceneGeometry,
 }: RunTmySimulationInput): Promise<TmySimulationResult> {
   const normals = await fetchNasaPowerClimateNormals({
     latitude: location.lat,
     longitude: location.lon,
   })
 
-  return buildTmySimulationResult(location, systemConfig, normals)
+  return buildTmySimulationResult(
+    location,
+    systemConfig,
+    normals,
+    REFERENCE_YEAR,
+    sceneGeometry,
+  )
 }
