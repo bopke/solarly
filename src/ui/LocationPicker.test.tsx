@@ -21,9 +21,24 @@ const { FakeMap, FakeMarker, mapInstances, markerInstances } = vi.hoisted(
       handlers: Record<string, Array<(...args: unknown[]) => void>> = {}
       center: [number, number]
       zoom: number
-      constructor(options: { center: [number, number]; zoom: number }) {
+      container: HTMLElement
+      constructor(options: {
+        container: HTMLElement
+        center: [number, number]
+        zoom: number
+      }) {
         this.center = options.center
         this.zoom = options.zoom
+        this.container = options.container
+        // Mirrors real maplibre-gl: the `Map` constructor adds this class
+        // to its container element imperatively, outside of React's
+        // control. If something (e.g. an `isHero`-driven `className`)
+        // ever caused React to rewrite the container's `class` attribute,
+        // this class — and the `position: relative` it (and our own
+        // defensive CSS) provide for the canvas — would be silently wiped
+        // out. See LocationPicker.tsx/.module.css and the "hero vs.
+        // compact presentation" tests below.
+        options.container.classList.add('maplibregl-map')
         mapInstances.push(this)
       }
       addControl() {
@@ -385,24 +400,56 @@ describe('LocationPicker', () => {
 
   describe('hero vs. compact presentation (issue #51)', () => {
     // CSS Modules class names are hashed at build time (e.g.
-    // `_mapContainerHero_3b94e4`), so assertions below match a substring
+    // `_mapWrapperHero_3b94e4`), so assertions below match a substring
     // of `className` rather than the exact class via `toHaveClass`.
 
     it('renders the compact presentation by default', () => {
       render(<LocationPicker onLocationChange={vi.fn()} />)
 
       const mapContainer = screen.getByTestId('location-picker-map')
-      expect(mapContainer.className).not.toMatch(/mapContainerHero/)
+      // Hero sizing is scoped via the `.mapWrapperHero` ancestor, not a
+      // class on the map container itself — see the "does not clobber"
+      // test below for why.
+      expect(mapContainer.parentElement?.className).not.toMatch(
+        /mapWrapperHero/,
+      )
     })
 
     it('renders the hero presentation when isHero is true', () => {
       render(<LocationPicker onLocationChange={vi.fn()} isHero />)
 
       const mapContainer = screen.getByTestId('location-picker-map')
-      expect(mapContainer.className).toMatch(/mapContainerHero/)
+      expect(mapContainer.parentElement?.className).toMatch(/mapWrapperHero/)
 
       const searchInput = screen.getByLabelText('Search for a location')
       expect(searchInput.closest('div')?.className).toMatch(/searchBoxHero/)
+    })
+
+    it('never rewrites the map container className across an isHero toggle, so MapLibre\'s own "maplibregl-map" class survives', () => {
+      // Regression test for the bug found in review of #52: making the map
+      // container's `className` itself depend on `isHero` causes React to
+      // rewrite the `class` attribute on toggle, wiping out the
+      // `maplibregl-map` class MapLibre adds imperatively in its
+      // constructor (and, with it, the `position: relative` the
+      // absolutely-positioned canvas needs — see LocationPicker.module.css
+      // and docs/decisions/0012-location-picker.md). Asserting the real
+      // library's class survives is a stronger check than asserting our
+      // own hero/compact classes stay off this element, since it directly
+      // covers the mechanism that broke.
+      const { rerender } = render(
+        <LocationPicker onLocationChange={vi.fn()} isHero={false} />,
+      )
+      const mapContainer = screen.getByTestId('location-picker-map')
+      const classNameBefore = mapContainer.className
+      expect(classNameBefore).toMatch(/maplibregl-map/)
+
+      rerender(<LocationPicker onLocationChange={vi.fn()} isHero />)
+      expect(mapContainer.className).toBe(classNameBefore)
+      expect(mapContainer.className).toMatch(/maplibregl-map/)
+
+      rerender(<LocationPicker onLocationChange={vi.fn()} isHero={false} />)
+      expect(mapContainer.className).toBe(classNameBefore)
+      expect(mapContainer.className).toMatch(/maplibregl-map/)
     })
 
     it('does not create a new MapLibre Map instance when isHero toggles (no remount)', () => {

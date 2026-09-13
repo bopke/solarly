@@ -130,7 +130,35 @@
   height: 320px;
   border-radius: 0.375rem;
   overflow: hidden;
+  /*
+   * Defensive: MapLibre's own `maplibregl-map` class (added imperatively
+   * in the Map constructor, not by us) also sets `position: relative`,
+   * which `.maplibregl-canvas`'s `position: absolute` depends on for its
+   * containing block. We never toggle `className` on this element (see
+   * the doc comment below and LocationPicker.tsx's module doc comment),
+   * so that class should always survive — but setting this here too means
+   * the layout doesn't silently depend on a third-party library's runtime
+   * DOM mutation succeeding.
+   */
+  position: relative;
 }
+
+/*
+ * Hero sizing is applied via the ancestor `.mapWrapperHero` selector
+ * below, NOT by adding a class to `.mapContainer` itself. `.mapContainer`
+ * is the exact DOM node MapLibre is constructed against
+ * (`new MapLibreMap({ container })`), and MapLibre adds its own
+ * `maplibregl-map` class to that node imperatively in its constructor.
+ * React rewrites the whole `class` attribute whenever an element's
+ * `className` prop changes, so if `.mapContainer`'s className were ever
+ * made conditional on `isHero`, toggling `isHero` would silently wipe out
+ * `maplibregl-map` (and the `position: relative` it provides — see the
+ * comment above) the moment React re-renders. Keeping `.mapContainer`'s
+ * className constant and instead scoping hero rules through the parent
+ * `.mapWrapperHero` class (which IS safe to toggle — MapLibre never
+ * touches it) sidesteps that trap entirely. See
+ * docs/decisions/0012-location-picker.md.
+ */
 
 /*
  * Hero, narrow-viewport case: the sidebar is a stacked accordion here
@@ -140,7 +168,7 @@
  * without needing `position: fixed` layout math against a sidebar column
  * that doesn't exist at this width.
  */
-.mapContainerHero {
+.mapWrapperHero .mapContainer {
   height: 55vh;
 }
 
@@ -180,7 +208,7 @@
     min-height: 0;
   }
 
-  .mapContainerHero {
+  .mapWrapperHero .mapContainer {
     height: 100%;
   }
 }
