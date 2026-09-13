@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { setWorkerUrl } from 'maplibre-gl'
-import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
+import MaplibreWorker from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import './index.css'
 import './ui/tokens.css'
 import App from './App.tsx'
@@ -16,11 +16,17 @@ import App from './App.tsx'
 // those aren't worker-dependent). Works fine under `npm run dev` because
 // Vite's dev server can resolve arbitrary node_modules paths on demand.
 //
-// Fix: import the worker file with Vite's `?url` suffix (a *static* import
-// Vite's bundler can see and correctly copy/hash into the build output),
-// then hand that real URL to maplibre-gl via its public `setWorkerUrl`
-// escape hatch before any Map is created.
-setWorkerUrl(maplibreWorkerUrl)
+// Fix: import the worker file with Vite's `?worker&url` suffix. A plain
+// `?url` only copies the file byte-for-byte as a static asset — but
+// maplibre-gl-worker.mjs itself imports ~60 bindings from a sibling
+// maplibre-gl-shared.mjs chunk, which never gets emitted under `?url`,
+// so the worker's own module load fails with the exact same
+// wrong-MIME-type error one level deeper. `?worker` tells Vite to treat
+// the file as a genuine worker entry point, bundling its dependencies
+// into one self-contained output file; `&url` then gives us that real
+// built URL to register with maplibre-gl's own `setWorkerUrl` escape
+// hatch, before any Map is created.
+setWorkerUrl(MaplibreWorker)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
