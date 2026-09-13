@@ -127,6 +127,66 @@ describe('buildPanelsGeometry', () => {
     expect(position.getX(0)).toBeCloseTo(position.getX(4), 9)
     expect(position.getY(0)).toBeCloseTo(position.getY(4), 9)
   })
+
+  it('at a non-zero tilt, sits the bottom face on the roof plane and lifts the top face above it (regression: z-fighting)', () => {
+    // Reproduces the PR #68 review finding: at tilt=0 with normal (0,0,1)
+    // the box's "up" axis and the roof's flat plane are indistinguishable,
+    // so a bug that makes the visible top face coplanar with the roof
+    // (rather than offset above it) doesn't show up in that case. A
+    // meaningfully tilted plane (35deg here) is required to catch it.
+    const tiltDeg = 35
+    const azimuthDeg = 200
+    const tiltRad = (tiltDeg * Math.PI) / 180
+    const azimuthRad = (azimuthDeg * Math.PI) / 180
+    // Mirrors polygonToExtrusionGeometry's own normal formula.
+    const slope = { x: Math.sin(azimuthRad), y: Math.cos(azimuthRad) }
+    const normal = {
+      x: Math.sin(tiltRad) * slope.x,
+      y: Math.sin(tiltRad) * slope.y,
+      z: Math.cos(tiltRad),
+    }
+
+    const panels = [makePanel(0, 0, 3, -2)]
+    const thickness = 0.04
+    const buffer = buildPanelsGeometry(
+      panels,
+      tiltDeg,
+      azimuthDeg,
+      normal,
+      thickness,
+    )
+    const position = buffer.getAttribute('position')
+
+    for (let i = 0; i < 4; i++) {
+      const topX = position.getX(i)
+      const topY = position.getY(i)
+      const topZ = position.getZ(i)
+      const bottomX = position.getX(i + 4)
+      const bottomY = position.getY(i + 4)
+      const bottomZ = position.getZ(i + 4)
+
+      // The bottom face corner must land exactly on the tilted roof plane
+      // (this is the box face that should be coplanar with the roof).
+      expect(bottomZ).toBeCloseTo(
+        liftToPlane({ x: bottomX, y: bottomY }, tiltDeg, azimuthDeg),
+        6,
+      )
+
+      // The top face corner must be offset from the bottom (roof-plane)
+      // corner by exactly `thickness` along the surface normal, not
+      // embedded into the roof and not merely coplanar with it.
+      expect(topX).toBeCloseTo(bottomX + normal.x * thickness, 6)
+      expect(topY).toBeCloseTo(bottomY + normal.y * thickness, 6)
+      expect(topZ).toBeCloseTo(bottomZ + normal.z * thickness, 6)
+
+      // At this non-zero tilt, the top face must be measurably displaced
+      // from the roof plane along the normal — i.e. NOT coplanar with it
+      // (the actual bug: previously this deviation was ~0, floating-point
+      // zero, causing z-fighting against the roof mesh).
+      const roofZAtTop = liftToPlane({ x: topX, y: topY }, tiltDeg, azimuthDeg)
+      expect(Math.abs(topZ - roofZAtTop)).toBeGreaterThan(thickness * 0.5)
+    }
+  })
 })
 
 describe('computeBounds / mergeBounds', () => {

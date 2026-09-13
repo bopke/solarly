@@ -91,7 +91,12 @@ export function liftToPlane(
  * multiple of 90 degrees — see `panelAutoFillGrid`'s module doc for why its
  * grid is axis-aligned in plan view rather than rotated to the azimuth).
  * The panel is then given a small thickness by offsetting a second set of
- * corners along the shape's surface `normal`.
+ * corners along the shape's surface `normal`. The lifted (on-plane) corners
+ * form the box's *bottom* face, and the box is extruded *upward* — along
+ * `+normal` — to build the top face, so the panel sits visibly above the
+ * roof surface rather than being coplanar with it (a coplanar top face
+ * causes z-fighting against the roof mesh underneath — see the PR #68
+ * review for the render artifact this produced before the fix).
  */
 export function buildPanelsGeometry(
   panels: PanelPlacement[],
@@ -114,15 +119,15 @@ export function buildPanelsGeometry(
   }
 
   for (const panel of panels) {
-    const top: Vec3[] = panel.corners.map((c) => ({
+    const bottom: Vec3[] = panel.corners.map((c) => ({
       x: c.x,
       y: c.y,
       z: liftToPlane(c, tiltDeg, azimuthDeg),
     }))
-    const bottom: Vec3[] = top.map((c) => ({
-      x: c.x - normal.x * thicknessM,
-      y: c.y - normal.y * thicknessM,
-      z: c.z - normal.z * thicknessM,
+    const top: Vec3[] = bottom.map((c) => ({
+      x: c.x + normal.x * thicknessM,
+      y: c.y + normal.y * thicknessM,
+      z: c.z + normal.z * thicknessM,
     }))
 
     const base = positions.length / 3
