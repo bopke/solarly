@@ -37,6 +37,10 @@ const { FakeMap, FakeMarker, mapInstances, markerInstances } = vi.hoisted(
         this.center = options.center
         this.zoom = options.zoom
       }
+      resizeCallCount = 0
+      resize() {
+        this.resizeCallCount += 1
+      }
       remove() {}
     }
 
@@ -377,5 +381,69 @@ describe('LocationPicker', () => {
     // the user is already positioned/zoomed where they want to be.
     expect(map.zoom).toBe(zoomBeforeDrag)
     expect(map.center).toEqual(centerBeforeDrag)
+  })
+
+  describe('hero vs. compact presentation (issue #51)', () => {
+    // CSS Modules class names are hashed at build time (e.g.
+    // `_mapContainerHero_3b94e4`), so assertions below match a substring
+    // of `className` rather than the exact class via `toHaveClass`.
+
+    it('renders the compact presentation by default', () => {
+      render(<LocationPicker onLocationChange={vi.fn()} />)
+
+      const mapContainer = screen.getByTestId('location-picker-map')
+      expect(mapContainer.className).not.toMatch(/mapContainerHero/)
+    })
+
+    it('renders the hero presentation when isHero is true', () => {
+      render(<LocationPicker onLocationChange={vi.fn()} isHero />)
+
+      const mapContainer = screen.getByTestId('location-picker-map')
+      expect(mapContainer.className).toMatch(/mapContainerHero/)
+
+      const searchInput = screen.getByLabelText('Search for a location')
+      expect(searchInput.closest('div')?.className).toMatch(/searchBoxHero/)
+    })
+
+    it('does not create a new MapLibre Map instance when isHero toggles (no remount)', () => {
+      const { rerender } = render(
+        <LocationPicker onLocationChange={vi.fn()} isHero={false} />,
+      )
+      expect(mapInstances).toHaveLength(1)
+      const mapBefore = mapInstances[0]
+
+      rerender(<LocationPicker onLocationChange={vi.fn()} isHero />)
+      expect(mapInstances).toHaveLength(1)
+      expect(mapInstances[0]).toBe(mapBefore)
+
+      rerender(<LocationPicker onLocationChange={vi.fn()} isHero={false} />)
+      expect(mapInstances).toHaveLength(1)
+      expect(mapInstances[0]).toBe(mapBefore)
+    })
+
+    it('preserves the map container DOM node across an isHero toggle', () => {
+      const { rerender } = render(
+        <LocationPicker onLocationChange={vi.fn()} isHero={false} />,
+      )
+      const nodeBefore = screen.getByTestId('location-picker-map')
+
+      rerender(<LocationPicker onLocationChange={vi.fn()} isHero />)
+      const nodeAfter = screen.getByTestId('location-picker-map')
+
+      expect(nodeAfter).toBe(nodeBefore)
+    })
+
+    it('calls map.resize() once the container is observed (hero/compact size changes)', () => {
+      render(<LocationPicker onLocationChange={vi.fn()} isHero />)
+
+      // jsdom's ResizeObserver stub (src/test/setup.ts) fires synchronously
+      // on `observe()`, which is what the map-setup effect relies on to
+      // notice CSS-driven size changes and redraw the canvas — see
+      // LocationPicker.tsx's module doc comment. Real hero<->compact
+      // resize behavior beyond this is covered by manual browser
+      // verification (see the PR description), since jsdom doesn't
+      // actually lay out CSS.
+      expect(mapInstances[0].resizeCallCount).toBeGreaterThan(0)
+    })
   })
 })

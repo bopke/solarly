@@ -6,6 +6,15 @@
  * from those via color-mix() rather than duplicating a second light/dark
  * palette here.
  */
+/*
+ * Hero/compact presentation (issue #51): `.containerHero` etc. are added
+ * alongside the base classes below when `LocationPicker`'s `isHero` prop
+ * is true, rather than swapping to a wholly different class — the DOM
+ * node that hosts the MapLibre canvas is the same element in both modes,
+ * only its size/position changes. See `LocationPicker.tsx`'s module doc
+ * comment for why (avoiding an unmount/remount that would tear down the
+ * WebGL context).
+ */
 .container {
   --lp-border: color-mix(in srgb, var(--text, #1c1917) 25%, transparent);
   --lp-border-subtle: color-mix(in srgb, var(--text, #1c1917) 12%, transparent);
@@ -28,8 +37,32 @@
   color: var(--text, #1c1917);
 }
 
+.mapWrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .searchBox {
   position: relative;
+}
+
+/*
+ * Hero overlay: the search box floats on top of the map instead of
+ * sitting above it in normal flow. `.mapWrapper` is the positioned
+ * ancestor (`position: relative`, set unconditionally above) this is
+ * anchored against, so it works the same whether the wrapper itself is
+ * `position: fixed` (desktop hero, below) or in normal flow (narrow-
+ * viewport hero).
+ */
+.searchBoxHero {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  right: 0.75rem;
+  z-index: 5;
+  max-width: 26rem;
 }
 
 .input {
@@ -99,7 +132,55 @@
   overflow: hidden;
 }
 
+/*
+ * Hero, narrow-viewport case: the sidebar is a stacked accordion here
+ * (see Sidebar.module.css's `@media (max-width: 768px)`), so there's no
+ * separate main content area to visually relocate onto — instead the map
+ * just grows tall in its normal document-flow position, still prominent
+ * without needing `position: fixed` layout math against a sidebar column
+ * that doesn't exist at this width.
+ */
+.mapContainerHero {
+  height: 55vh;
+}
+
 .coords {
   font-size: 0.875rem;
   color: var(--lp-text-muted);
+}
+
+/*
+ * Hero, desktop case: visually relocate the map (without moving it in the
+ * DOM — see LocationPicker.tsx's module doc comment) to cover the main
+ * content area, which starts to the right of the sidebar's fixed-width
+ * column. `position: fixed` escapes the sidebar's `overflow-y: auto` and
+ * narrow 320px column entirely, as long as no ancestor establishes its
+ * own containing block (none in AppShell/Sidebar do, as of this writing —
+ * introducing a `transform`/`filter`/`will-change` on one would break
+ * this and needs re-checking against it).
+ */
+@media (min-width: 769px) {
+  .containerHero {
+    position: fixed;
+    top: 0;
+    left: var(--shell-sidebar-width, 320px);
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1.25rem;
+    background: var(--lp-surface);
+    overflow: auto;
+  }
+
+  .mapWrapperHero {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .mapContainerHero {
+    height: 100%;
+  }
 }
