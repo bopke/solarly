@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { runLiveSimulation } from './runLiveSimulation'
 import type { HourlyClimate } from '../data-sources'
+import type { PanelArrayConfig, SystemConfig } from './types'
 
 /**
  * Fixture climate data: two synthetic summer days at Berlin's latitude
@@ -28,15 +29,30 @@ const BERLIN_SUMMER_FIXTURE: HourlyClimate[] = [
 
 const BERLIN = { lat: 52.52, lon: 13.41 }
 
-const SYSTEM_CONFIG = {
+const ARRAY_CONFIG: PanelArrayConfig = {
   tiltDeg: 35,
   azimuthDeg: 180,
   panelCount: 20,
   wattsPerPanel: 400,
   efficiencyPercent: 21,
   tempCoefficientPercentPerC: -0.34,
-  systemLossesPercent: 14,
   manualShadingPercent: 10,
+}
+
+const SYSTEM_CONFIG: SystemConfig = {
+  arrays: [ARRAY_CONFIG],
+  systemLossesPercent: 14,
+}
+
+/** Overrides a field on the single array of a single-array `SystemConfig` fixture. */
+function withArrayOverride(
+  config: SystemConfig,
+  override: Partial<PanelArrayConfig>,
+): SystemConfig {
+  return {
+    ...config,
+    arrays: config.arrays.map((array) => ({ ...array, ...override })),
+  }
 }
 
 describe('runLiveSimulation', () => {
@@ -73,8 +89,7 @@ describe('runLiveSimulation', () => {
     // exceed that (POA irradiance can modestly exceed 1000 W/m2 with the
     // isotropic ground-reflected term, but not by nearly enough to clear
     // this margin).
-    const ratedWattsPeak =
-      SYSTEM_CONFIG.panelCount * SYSTEM_CONFIG.wattsPerPanel
+    const ratedWattsPeak = ARRAY_CONFIG.panelCount * ARRAY_CONFIG.wattsPerPanel
     for (const watts of byTimestamp.values()) {
       expect(watts).toBeLessThan(ratedWattsPeak * 1.2)
     }
@@ -121,7 +136,9 @@ describe('runLiveSimulation', () => {
 
   it('applies manual shading as an additional multiplicative derate on top of system losses', async () => {
     const baseInput = { location: BERLIN, systemConfig: SYSTEM_CONFIG }
-    const noShadingConfig = { ...SYSTEM_CONFIG, manualShadingPercent: 0 }
+    const noShadingConfig = withArrayOverride(SYSTEM_CONFIG, {
+      manualShadingPercent: 0,
+    })
     const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
 
     const [withShading, withoutShading] = await Promise.all([
@@ -178,7 +195,9 @@ describe('runLiveSimulation', () => {
         runLiveSimulation(
           {
             location: BERLIN,
-            systemConfig: { ...SYSTEM_CONFIG, manualShadingPercent: NaN },
+            systemConfig: withArrayOverride(SYSTEM_CONFIG, {
+              manualShadingPercent: NaN,
+            }),
           },
           deps,
         ),
@@ -202,7 +221,9 @@ describe('runLiveSimulation', () => {
         runLiveSimulation(
           {
             location: BERLIN,
-            systemConfig: { ...SYSTEM_CONFIG, panelCount: NaN },
+            systemConfig: withArrayOverride(SYSTEM_CONFIG, {
+              panelCount: NaN,
+            }),
           },
           deps,
         ),
@@ -217,7 +238,9 @@ describe('runLiveSimulation', () => {
         runLiveSimulation(
           {
             location: BERLIN,
-            systemConfig: { ...SYSTEM_CONFIG, manualShadingPercent: -20 },
+            systemConfig: withArrayOverride(SYSTEM_CONFIG, {
+              manualShadingPercent: -20,
+            }),
           },
           deps,
         ),
@@ -261,6 +284,107 @@ describe('runLiveSimulation', () => {
           deps,
         ),
       ).rejects.toThrow(/lat/)
+    })
+  })
+
+  describe('multi-array configs', () => {
+    // A steep south-facing roof array plus a flatter east-facing roof array
+    // (e.g. a smaller secondary roof face) — meaningfully different
+    // tilt/azimuth per the issue #54 acceptance criteria.
+    const SOUTH_STEEP_ARRAY: PanelArrayConfig = {
+      tiltDeg: 40,
+      azimuthDeg: 180,
+      panelCount: 20,
+      wattsPerPanel: 400,
+      efficiencyPercent: 21,
+      tempCoefficientPercentPerC: -0.34,
+      manualShadingPercent: 10,
+    }
+    const EAST_FLAT_ARRAY: PanelArrayConfig = {
+      tiltDeg: 15,
+      azimuthDeg: 90,
+      panelCount: 10,
+      wattsPerPanel: 350,
+      efficiencyPercent: 19,
+      tempCoefficientPercentPerC: -0.4,
+      manualShadingPercent: 5,
+    }
+
+    it("sums a multi-array system's output to the sum of each array's standalone contribution", async () => {
+      const multiArraySystemConfig: SystemConfig = {
+        arrays: [SOUTH_STEEP_ARRAY, EAST_FLAT_ARRAY],
+        systemLossesPercent: 14,
+      }
+      const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
+
+      const [combined, southOnly, eastOnly] = await Promise.all([
+        runLiveSimulation(
+          { location: BERLIN, systemConfig: multiArraySystemConfig },
+          deps,
+        ),
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: {
+              arrays: [SOUTH_STEEP_ARRAY],
+              systemLossesPercent: 14,
+            },
+          },
+          deps,
+        ),
+        runLiveSimulation(
+          {
+            location: BERLIN,
+            systemConfig: {
+              arrays: [EAST_FLAT_ARRAY],
+              systemLossesPercent: 14,
+            },
+          },
+          deps,
+        ),
+      ])
+
+      const southByTimestamp = new Map(
+        southOnly.hourlyWattsSeries.map((p) => [p.timestamp, p.watts]),
+      )
+      const eastByTimestamp = new Map(
+        eastOnly.hourlyWattsSeries.map((p) => [p.timestamp, p.watts]),
+      )
+
+      for (const point of combined.hourlyWattsSeries) {
+        const expectedWatts =
+          (southByTimestamp.get(point.timestamp) ?? 0) +
+          (eastByTimestamp.get(point.timestamp) ?? 0)
+        expect(point.watts).toBeCloseTo(expectedWatts, 6)
+      }
+
+      // Sanity check the fixture actually produces some non-zero daytime
+      // output, so the above loop isn't vacuously comparing zeros.
+      const middayWatts = combined.hourlyWattsSeries.find(
+        (p) => p.timestamp === '2026-06-21T12:00:00Z',
+      )!.watts
+      expect(middayWatts).toBeGreaterThan(0)
+    })
+
+    it('a single-array config wrapped in a one-element arrays array matches the pre-#54 flat-shape output (regression check)', async () => {
+      const deps = { fetchForecast: async () => BERLIN_SUMMER_FIXTURE }
+      const result = await runLiveSimulation(
+        { location: BERLIN, systemConfig: SYSTEM_CONFIG },
+        deps,
+      )
+
+      const middayWatts = result.hourlyWattsSeries.find(
+        (p) => p.timestamp === '2026-06-21T12:00:00Z',
+      )!.watts
+      const eveningWatts = result.hourlyWattsSeries.find(
+        (p) => p.timestamp === '2026-06-21T18:00:00Z',
+      )!.watts
+
+      // Same golden reference values as the single-array test above,
+      // independently verified against pvlib — confirms summing over an
+      // array of length one is a byte-identical no-op.
+      expect(middayWatts).toBeCloseTo(4180.5, 1)
+      expect(eveningWatts).toBeCloseTo(558.4, 1)
     })
   })
 })

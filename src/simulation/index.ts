@@ -12,6 +12,7 @@ export {
 export type {
   Location,
   SystemConfig,
+  PanelArrayConfig,
   HourlyPowerPoint,
   HourlyPoint,
   MonthlySimulation,

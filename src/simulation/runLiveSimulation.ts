@@ -19,6 +19,7 @@ import type {
   HourlyPowerPoint,
   Location,
   LiveSimulationResult,
+  PanelArrayConfig,
   SystemConfig,
 } from './types'
 
@@ -76,52 +77,51 @@ function validateInput(location: Location, systemConfig: SystemConfig): void {
     )
   }
 
-  requireFiniteInRange('systemConfig.tiltDeg', systemConfig.tiltDeg, 0, 90)
-  requireFiniteInRange(
-    'systemConfig.azimuthDeg',
-    systemConfig.azimuthDeg,
-    0,
-    360,
-  )
   requireFiniteInRange(
     'systemConfig.systemLossesPercent',
     systemConfig.systemLossesPercent,
     0,
     100,
   )
-  requireFiniteInRange(
-    'systemConfig.manualShadingPercent',
-    systemConfig.manualShadingPercent,
-    0,
-    100,
-  )
 
-  if (
-    !Number.isFinite(systemConfig.panelCount) ||
-    systemConfig.panelCount <= 0
-  ) {
+  if (systemConfig.arrays.length === 0) {
     throw new Error(
-      `Invalid systemConfig.panelCount: must be a finite number > 0, got ${systemConfig.panelCount}`,
+      'Invalid systemConfig.arrays: must contain at least one array',
     )
   }
-  if (
-    !Number.isFinite(systemConfig.wattsPerPanel) ||
-    systemConfig.wattsPerPanel <= 0
-  ) {
-    throw new Error(
-      `Invalid systemConfig.wattsPerPanel: must be a finite number > 0, got ${systemConfig.wattsPerPanel}`,
+
+  systemConfig.arrays.forEach((array, index) => {
+    const prefix = `systemConfig.arrays[${index}]`
+    requireFiniteInRange(`${prefix}.tiltDeg`, array.tiltDeg, 0, 90)
+    requireFiniteInRange(`${prefix}.azimuthDeg`, array.azimuthDeg, 0, 360)
+    requireFiniteInRange(
+      `${prefix}.manualShadingPercent`,
+      array.manualShadingPercent,
+      0,
+      100,
     )
-  }
-  if (!Number.isFinite(systemConfig.tempCoefficientPercentPerC)) {
-    throw new Error(
-      `Invalid systemConfig.tempCoefficientPercentPerC: must be a finite number, got ${systemConfig.tempCoefficientPercentPerC}`,
-    )
-  }
-  if (!Number.isFinite(systemConfig.efficiencyPercent)) {
-    throw new Error(
-      `Invalid systemConfig.efficiencyPercent: must be a finite number, got ${systemConfig.efficiencyPercent}`,
-    )
-  }
+
+    if (!Number.isFinite(array.panelCount) || array.panelCount <= 0) {
+      throw new Error(
+        `Invalid ${prefix}.panelCount: must be a finite number > 0, got ${array.panelCount}`,
+      )
+    }
+    if (!Number.isFinite(array.wattsPerPanel) || array.wattsPerPanel <= 0) {
+      throw new Error(
+        `Invalid ${prefix}.wattsPerPanel: must be a finite number > 0, got ${array.wattsPerPanel}`,
+      )
+    }
+    if (!Number.isFinite(array.tempCoefficientPercentPerC)) {
+      throw new Error(
+        `Invalid ${prefix}.tempCoefficientPercentPerC: must be a finite number, got ${array.tempCoefficientPercentPerC}`,
+      )
+    }
+    if (!Number.isFinite(array.efficiencyPercent)) {
+      throw new Error(
+        `Invalid ${prefix}.efficiencyPercent: must be a finite number, got ${array.efficiencyPercent}`,
+      )
+    }
+  })
 }
 
 function requireFiniteInRange(
@@ -137,11 +137,11 @@ function requireFiniteInRange(
   }
 }
 
-function toPanelSpec(systemConfig: SystemConfig): PanelSpec {
+function toPanelSpec(array: PanelArrayConfig): PanelSpec {
   return {
-    ratedWattsPeak: systemConfig.panelCount * systemConfig.wattsPerPanel,
-    efficiencyPercent: systemConfig.efficiencyPercent,
-    tempCoefficientPercentPerC: systemConfig.tempCoefficientPercentPerC,
+    ratedWattsPeak: array.panelCount * array.wattsPerPanel,
+    efficiencyPercent: array.efficiencyPercent,
+    tempCoefficientPercentPerC: array.tempCoefficientPercentPerC,
   }
 }
 
@@ -169,17 +169,9 @@ export async function runLiveSimulation(
   const { location, systemConfig } = input
   validateInput(location, systemConfig)
   const climate = await deps.fetchForecast(location.lat, location.lon)
-  const panelSpec = toPanelSpec(systemConfig)
-  const manualShadingFactor = 1 - systemConfig.manualShadingPercent / 100
 
   const hourlyWattsSeries: HourlyPowerPoint[] = climate.map((entry) =>
-    hourlyPowerPoint(
-      entry,
-      location,
-      systemConfig,
-      panelSpec,
-      manualShadingFactor,
-    ),
+    hourlyPowerPoint(entry, location, systemConfig),
   )
 
   return {
@@ -193,8 +185,6 @@ function hourlyPowerPoint(
   entry: HourlyClimate,
   location: Location,
   systemConfig: SystemConfig,
-  panelSpec: PanelSpec,
-  manualShadingFactor: number,
 ): HourlyPowerPoint {
   const stampedInstant = new Date(entry.timestamp)
   // Compute sun position at the interval midpoint, not the HH:00Z stamp
@@ -205,19 +195,23 @@ function hourlyPowerPoint(
 
   const sunPos = sunPosition(location.lat, location.lon, midpointInstant)
   const { directWm2, diffuseWm2 } = decomposeGhi(entry.ghiWm2, sunPos)
-  const poa = poaIrradiance(
-    { direct: directWm2, diffuse: diffuseWm2 },
-    sunPos,
-    systemConfig.tiltDeg,
-    systemConfig.azimuthDeg,
-  )
-  const basePowerW = panelPowerOutput(
-    poa,
-    panelSpec,
-    entry.temperatureC,
-    systemConfig.systemLossesPercent,
-  )
-  const watts = Math.max(basePowerW * manualShadingFactor, 0)
+
+  const watts = systemConfig.arrays.reduce((sum, array) => {
+    const poa = poaIrradiance(
+      { direct: directWm2, diffuse: diffuseWm2 },
+      sunPos,
+      array.tiltDeg,
+      array.azimuthDeg,
+    )
+    const basePowerW = panelPowerOutput(
+      poa,
+      toPanelSpec(array),
+      entry.temperatureC,
+      systemConfig.systemLossesPercent,
+    )
+    const manualShadingFactor = 1 - array.manualShadingPercent / 100
+    return sum + Math.max(basePowerW * manualShadingFactor, 0)
+  }, 0)
 
   return { timestamp: entry.timestamp, watts }
 }

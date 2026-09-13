@@ -16,9 +16,34 @@ import {
   runLiveSimulation,
   runTmySimulation,
   type LiveSimulationResult,
+  type SystemConfig,
   type TmySimulationResult,
 } from './simulation'
 import { NasaPowerNoDataError } from './data-sources'
+
+/**
+ * Adapts `SystemConfigForm`'s single-array UI config into the simulation
+ * module's multi-array `SystemConfig` shape (issue #54) — a single-element
+ * `arrays` array, which sums to the same output as the old flat shape (see
+ * the M2 design spec's "Data flow and the multi-array model" section).
+ * `presetId` is UI-only and intentionally dropped here.
+ */
+function toSimulationSystemConfig(config: UiSystemConfig): SystemConfig {
+  return {
+    arrays: [
+      {
+        tiltDeg: config.tiltDeg,
+        azimuthDeg: config.azimuthDeg,
+        panelCount: config.panelCount,
+        wattsPerPanel: config.wattsPerPanel,
+        efficiencyPercent: config.efficiencyPercent,
+        tempCoefficientPercentPerC: config.tempCoefficientPercentPerC,
+        manualShadingPercent: config.manualShadingPercent,
+      },
+    ],
+    systemLossesPercent: config.systemLossesPercent,
+  }
+}
 
 /**
  * The two simulation modes' results, kept independently rather than in a
@@ -137,10 +162,14 @@ function App() {
     setSimulationError((prev) => (prev?.mode === runMode ? undefined : prev))
     const requestId = ++latestRequestId.current
 
+    const simulationSystemConfig = toSimulationSystemConfig(systemConfig)
     const run =
       runMode === 'tmy'
-        ? runTmySimulation({ location, systemConfig })
-        : runLiveSimulation({ location, systemConfig })
+        ? runTmySimulation({ location, systemConfig: simulationSystemConfig })
+        : runLiveSimulation({
+            location,
+            systemConfig: simulationSystemConfig,
+          })
 
     run
       .then((result) => {

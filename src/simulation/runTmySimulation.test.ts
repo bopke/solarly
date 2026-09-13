@@ -5,7 +5,7 @@ import {
   MAX_CLEARNESS_FACTOR,
   REFERENCE_YEAR,
 } from './runTmySimulation.ts'
-import type { SystemConfig } from './types.ts'
+import type { PanelArrayConfig, SystemConfig } from './types.ts'
 
 /**
  * Fixture climate normals loosely modeled on NASA POWER climatology for a
@@ -33,15 +33,30 @@ const SUNNY_LOCATION_NORMALS: MonthlyClimateNormal[] = [
 const SUNNY_LOCATION = { lat: 33.45, lon: -112.07 } // Phoenix, AZ
 
 /** A modest residential system: ~20 panels x 400W ~= 8kW. */
-const RESIDENTIAL_SYSTEM: SystemConfig = {
+const RESIDENTIAL_ARRAY: PanelArrayConfig = {
   tiltDeg: 20,
   azimuthDeg: 180,
   panelCount: 20,
   wattsPerPanel: 400,
   efficiencyPercent: 21,
   tempCoefficientPercentPerC: -0.34,
-  systemLossesPercent: 14,
   manualShadingPercent: 0,
+}
+
+const RESIDENTIAL_SYSTEM: SystemConfig = {
+  arrays: [RESIDENTIAL_ARRAY],
+  systemLossesPercent: 14,
+}
+
+/** Overrides a field on the single array of a single-array `SystemConfig` fixture. */
+function withArrayOverride(
+  config: SystemConfig,
+  override: Partial<PanelArrayConfig>,
+): SystemConfig {
+  return {
+    ...config,
+    arrays: config.arrays.map((array) => ({ ...array, ...override })),
+  }
 }
 
 describe('buildTmySimulationResult', () => {
@@ -278,10 +293,9 @@ describe('buildTmySimulationResult', () => {
   })
 
   it('applies manual shading as an additional derate on top of system losses', () => {
-    const shadedSystem: SystemConfig = {
-      ...RESIDENTIAL_SYSTEM,
+    const shadedSystem: SystemConfig = withArrayOverride(RESIDENTIAL_SYSTEM, {
       manualShadingPercent: 50,
-    }
+    })
 
     const unshaded = buildTmySimulationResult(
       SUNNY_LOCATION,
@@ -302,10 +316,9 @@ describe('buildTmySimulationResult', () => {
   })
 
   it('a bigger array (more panels) produces proportionally more energy', () => {
-    const biggerSystem: SystemConfig = {
-      ...RESIDENTIAL_SYSTEM,
-      panelCount: RESIDENTIAL_SYSTEM.panelCount * 2,
-    }
+    const biggerSystem: SystemConfig = withArrayOverride(RESIDENTIAL_SYSTEM, {
+      panelCount: RESIDENTIAL_ARRAY.panelCount * 2,
+    })
 
     const base = buildTmySimulationResult(
       SUNNY_LOCATION,
@@ -392,5 +405,93 @@ describe('buildTmySimulationResult', () => {
       expect(Number.isFinite(hour.powerW)).toBe(true)
       expect(Number.isFinite(hour.poaIrradianceWm2)).toBe(true)
     }
+  })
+
+  describe('multi-array configs', () => {
+    // A steep south-facing roof array plus a flatter east-facing roof array,
+    // meaningfully different tilt/azimuth per issue #54's acceptance
+    // criteria.
+    const SOUTH_STEEP_ARRAY: PanelArrayConfig = {
+      tiltDeg: 35,
+      azimuthDeg: 180,
+      panelCount: 20,
+      wattsPerPanel: 400,
+      efficiencyPercent: 21,
+      tempCoefficientPercentPerC: -0.34,
+      manualShadingPercent: 0,
+    }
+    const EAST_FLAT_ARRAY: PanelArrayConfig = {
+      tiltDeg: 10,
+      azimuthDeg: 90,
+      panelCount: 10,
+      wattsPerPanel: 350,
+      efficiencyPercent: 19,
+      tempCoefficientPercentPerC: -0.4,
+      manualShadingPercent: 5,
+    }
+    const MULTI_ARRAY_SYSTEM: SystemConfig = {
+      arrays: [SOUTH_STEEP_ARRAY, EAST_FLAT_ARRAY],
+      systemLossesPercent: 14,
+    }
+
+    it("sums each hour's power across arrays to the sum of each array's standalone contribution", () => {
+      const combined = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        MULTI_ARRAY_SYSTEM,
+        SUNNY_LOCATION_NORMALS,
+      )
+      const southOnly = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        { arrays: [SOUTH_STEEP_ARRAY], systemLossesPercent: 14 },
+        SUNNY_LOCATION_NORMALS,
+      )
+      const eastOnly = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        { arrays: [EAST_FLAT_ARRAY], systemLossesPercent: 14 },
+        SUNNY_LOCATION_NORMALS,
+      )
+
+      for (const month of combined.months) {
+        const southMonth = southOnly.months.find(
+          (m) => m.month === month.month,
+        )!
+        const eastMonth = eastOnly.months.find((m) => m.month === month.month)!
+
+        for (const hour of month.representativeDayHourly) {
+          const southHour = southMonth.representativeDayHourly.find(
+            (h) => h.hour === hour.hour,
+          )!
+          const eastHour = eastMonth.representativeDayHourly.find(
+            (h) => h.hour === hour.hour,
+          )!
+          expect(hour.powerW).toBeCloseTo(southHour.powerW + eastHour.powerW, 6)
+        }
+      }
+
+      // Sanity check: the annual total should also equal the sum of each
+      // array's standalone annual total.
+      expect(combined.annualTotalKWh).toBeCloseTo(
+        southOnly.annualTotalKWh + eastOnly.annualTotalKWh,
+        4,
+      )
+      expect(combined.annualTotalKWh).toBeGreaterThan(0)
+    })
+
+    it('a single-array config wrapped in a one-element arrays array matches the pre-#54 flat-shape output (regression check)', () => {
+      // RESIDENTIAL_SYSTEM already has a single-element `arrays` array (the
+      // post-#54 shape). This confirms every assertion elsewhere in this
+      // file — which was pinned against the pre-#54 flat-shape behavior —
+      // still holds, i.e. summing over an array of length one is a
+      // byte-identical no-op.
+      const result = buildTmySimulationResult(
+        SUNNY_LOCATION,
+        RESIDENTIAL_SYSTEM,
+        SUNNY_LOCATION_NORMALS,
+      )
+
+      const kWhPerKWp = result.annualTotalKWh / 8 // 20 panels * 400W = 8kWp
+      expect(kWhPerKWp).toBeGreaterThan(1500)
+      expect(kWhPerKWp).toBeLessThan(2200)
+    })
   })
 })
