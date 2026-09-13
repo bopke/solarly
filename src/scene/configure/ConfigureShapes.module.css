@@ -1,0 +1,82 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+
+.legend {
+  font-weight: 600;
+  padding: 0 0.25rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.presetLabel {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.presetButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.presetButton {
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+  cursor: pointer;
+}
+
+.presetButton[aria-pressed='true'] {
+  background: #2a6f97;
+  border-color: #2a6f97;
+  color: #fff;
+}
+
+.input {
+  font-size: 1rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+}
+
+.input[aria-invalid='true'] {
+  border-color: #c0392b;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+.error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #c0392b;
+}
