@@ -9,6 +9,12 @@ import {
   type Vec3,
 } from './shadowOcclusion'
 
+/** Test-local helper: normalizes a direction vector for angled-ray cases. */
+function normalize(v: Vec3): Vec3 {
+  const len = Math.hypot(v.x, v.y, v.z)
+  return { x: v.x / len, y: v.y / len, z: v.z / len }
+}
+
 /**
  * All reference distances below are hand-computed from the primitives'
  * exact geometric definitions (a flat plane through 3+ vertices; an
@@ -104,6 +110,71 @@ describe('rayPolygonIntersection', () => {
     )
     expect(t).toBe(tAgain)
   })
+
+  it('still detects a hit when the first three vertices are collinear (regression: normal used to be taken only from vertices[0..2])', () => {
+    // A valid, flat, non-degenerate horizontal roof at z=5 — but the first
+    // three traced vertices, (-2,0,5), (0,0,5), (2,0,5), lie exactly along
+    // the line y=0 (a redundant midpoint along that edge, the kind
+    // `scene/derive/geo.ts` documents as legitimate tracing input). Taking
+    // the normal from only vertices[0..2] gives a zero cross product and
+    // used to make this function return null for every ray, even ones that
+    // clearly hit the polygon.
+    const roofWithCollinearLeadingTriple: Vec3[] = [
+      { x: -2, y: 0, z: 5 },
+      { x: 0, y: 0, z: 5 },
+      { x: 2, y: 0, z: 5 },
+      { x: 2, y: 4, z: 5 },
+      { x: -2, y: 4, z: 5 },
+    ]
+    const t = rayPolygonIntersection(
+      { x: 0, y: 2, z: 0 },
+      { x: 0, y: 0, z: 1 },
+      roofWithCollinearLeadingTriple,
+    )
+    expect(t).toBeCloseTo(5, 9)
+  })
+
+  it('correctly handles a non-convex (L-shaped) polygon, hitting inside both arms and missing in the notch', () => {
+    // L-shape in the z=0 plane: the union of the bottom strip
+    // (0<=x<=4, 0<=y<=2) and the left strip (0<=x<=2, 2<=y<=4), i.e. a
+    // 4x4 square with the top-right 2x2 quadrant (the "notch") removed.
+    const lShape: Vec3[] = [
+      { x: 0, y: 0, z: 0 },
+      { x: 4, y: 0, z: 0 },
+      { x: 4, y: 2, z: 0 },
+      { x: 2, y: 2, z: 0 },
+      { x: 2, y: 4, z: 0 },
+      { x: 0, y: 4, z: 0 },
+    ]
+
+    // (1,1) is inside the bottom strip (part of both arms).
+    expect(
+      rayPolygonIntersection(
+        { x: 1, y: 1, z: -5 },
+        { x: 0, y: 0, z: 1 },
+        lShape,
+      ),
+    ).toBeCloseTo(5, 9)
+
+    // (3,1) is inside the bottom strip only (right arm, outside the left
+    // arm's x-range) — a case a convex-hull-shaped bug would get wrong.
+    expect(
+      rayPolygonIntersection(
+        { x: 3, y: 1, z: -5 },
+        { x: 0, y: 0, z: 1 },
+        lShape,
+      ),
+    ).toBeCloseTo(5, 9)
+
+    // (3,3) falls in the removed notch — outside the L-shape entirely.
+    expect(
+      rayPolygonIntersection(
+        { x: 3, y: 3, z: -5 },
+        { x: 0, y: 0, z: 1 },
+        lShape,
+      ),
+    ).toBeNull()
+  })
 })
 
 describe('rayCylinderIntersection', () => {
@@ -161,6 +232,44 @@ describe('rayCylinderIntersection', () => {
     )
     expect(t).toBeNull()
   })
+
+  it('hits an end cap when a near-vertical ray reaches the trunk volume before its lateral-surface crossing falls in range (regression: end caps were unmodeled, causing a false miss)', () => {
+    // A slightly-off-axis, mostly-vertical ray whose two lateral-surface
+    // roots both land far outside [zMin, zMax] (the ray leaves the radius-2
+    // circle laterally only very far above/below the cylinder), even though
+    // the ray genuinely passes through the cylinder's volume by entering
+    // through the bottom cap disk. Reference t hand/tool-computed from the
+    // ray-vs-plane-at-z=zMin formula: origin (0.3,0,-2), direction
+    // normalize(0.05,0,1) -> bottom-cap hit at t ~= 2.0024984394500787
+    // (hit point (0.3+t*dx, 0) has distance^2 0.16 < radius^2=4, so within
+    // the cap disk). The old lateral-only implementation returned null here.
+    const dir = normalize({ x: 0.05, y: 0, z: 1 })
+    const t = rayCylinderIntersection(
+      { x: 0.3, y: 0, z: -2 },
+      dir,
+      center,
+      radius,
+      zMin,
+      zMax,
+    )
+    expect(t).toBeCloseTo(2.0024984394500787, 9)
+  })
+
+  it('hits the lateral surface with an angled (non-horizontal) ray', () => {
+    // Reference t hand/tool-computed: origin (10,0,1),
+    // direction normalize(-1,0,0.3) -> lateral entry at
+    // t ~= 8.352245207128444, with the hit z (~3.4) within [zMin, zMax].
+    const dir = normalize({ x: -1, y: 0, z: 0.3 })
+    const t = rayCylinderIntersection(
+      { x: 10, y: 0, z: 1 },
+      dir,
+      center,
+      radius,
+      zMin,
+      zMax,
+    )
+    expect(t).toBeCloseTo(8.352245207128444, 9)
+  })
 })
 
 describe('rayConeIntersection', () => {
@@ -192,6 +301,45 @@ describe('rayConeIntersection', () => {
       height,
     )
     expect(t).toBeNull()
+  })
+
+  it('returns the true entry distance (via the base cap) rather than the lateral exit distance, for a ray that enters through the base (regression: base cap was unmodeled, causing a too-large returned distance)', () => {
+    // A near-vertical ray starting below and near the axis, heading up into
+    // the cone's volume through its flat base disk. Its two lateral-surface
+    // roots are an above-apex miss (t~13.82, excluded by the frustum check)
+    // and a lateral *exit* point at t~7.537 (within the frustum, since the
+    // ray keeps climbing through the canopy after entering via the base).
+    // The old lateral-only implementation returned that exit point, 7.537,
+    // as if it were the entry. The true entry is through the base cap disk
+    // at t ~= 4.019950248448356 (hit point at radius^2 ~= 0.81 < baseRadius^2 = 9).
+    const dir = normalize({ x: 0.1, y: 0, z: 1 })
+    const oldWrongLateralExit = 7.5374067158406675
+    const t = rayConeIntersection(
+      { x: 0.5, y: 0, z: 0 },
+      dir,
+      apex,
+      baseRadius,
+      height,
+    )
+    expect(t).toBeCloseTo(4.019950248448356, 9)
+    expect(t).not.toBeCloseTo(oldWrongLateralExit, 1)
+  })
+
+  it('hits the lateral surface with an angled (non-horizontal) ray, with no base-cap involvement', () => {
+    // Reference t hand/tool-computed: origin (10,0,6),
+    // direction normalize(-1,0,0.2) -> lateral entry at
+    // t ~= 9.06492357972051 (hit z ~= 7.78, within the frustum); the ray's
+    // base-cap crossing is behind the origin and outside the base disk, so
+    // this exercises the lateral path specifically.
+    const dir = normalize({ x: -1, y: 0, z: 0.2 })
+    const t = rayConeIntersection(
+      { x: 10, y: 0, z: 6 },
+      dir,
+      apex,
+      baseRadius,
+      height,
+    )
+    expect(t).toBeCloseTo(9.06492357972051, 9)
   })
 })
 

@@ -120,17 +120,46 @@ function pointAt(origin: Vec3, direction: Vec3, t: number): Vec3 {
 }
 
 /**
- * Smaller of two candidate hit distances that is finite and > `MIN_HIT_DISTANCE_M`,
- * or `null` if neither qualifies. Used by the quadratic-surface primitives
- * (cylinder, cone) where the near root should be preferred but may fall
- * behind the ray origin (or behind the primitive's own bounds) while the far
- * root is still a valid, visible hit.
+ * Computes a planar polygon's normal via Newell's method — summing the
+ * cross-product contribution of every edge, rather than taking a single
+ * vertex triple's cross product. This is robust to a degenerate *leading*
+ * triple: a traced polygon can legitimately contain redundant collinear
+ * vertices (e.g. from a tracing tool adding extra points along a straight
+ * edge — see `scene/derive/geo.ts`'s doc comment on that), and if the first
+ * three vertices happen to be collinear, `cross(v1-v0, v2-v0)` is the zero
+ * vector even though the polygon as a whole is perfectly valid and planar.
+ * Newell's method sums every edge pair, so any single degenerate triple
+ * (or several) contributes zero to the sum without zeroing it out, as long
+ * as the polygon isn't degenerate overall.
  */
-function nearestValidRoot(t1: number, t2: number): number | null {
-  const lo = Math.min(t1, t2)
-  const hi = Math.max(t1, t2)
-  if (lo > MIN_HIT_DISTANCE_M) return lo
-  if (hi > MIN_HIT_DISTANCE_M) return hi
+function newellNormal(vertices: Vec3[]): Vec3 {
+  let nx = 0
+  let ny = 0
+  let nz = 0
+  const n = vertices.length
+  for (let i = 0; i < n; i++) {
+    const curr = vertices[i]
+    const next = vertices[(i + 1) % n]
+    nx += (curr.y - next.y) * (curr.z + next.z)
+    ny += (curr.z - next.z) * (curr.x + next.x)
+    nz += (curr.x - next.x) * (curr.y + next.y)
+  }
+  return { x: nx, y: ny, z: nz }
+}
+
+/**
+ * The first edge (consecutive-vertex difference, wrapping around) with a
+ * non-negligible length, used as the polygon's 2D-projection basis vector.
+ * Scanning forward (rather than assuming `vertices[1] - vertices[0]`) keeps
+ * this robust to a leading run of coincident vertices, the same class of
+ * degenerate input `newellNormal` is robust to.
+ */
+function firstNonDegenerateEdge(vertices: Vec3[]): Vec3 | null {
+  const n = vertices.length
+  for (let i = 0; i < n; i++) {
+    const edge = subtract(vertices[(i + 1) % n], vertices[i])
+    if (length(edge) >= EPSILON) return edge
+  }
   return null
 }
 
@@ -139,17 +168,19 @@ function nearestValidRoot(t1: number, t2: number): number | null {
  * shape's already-extruded 3D vertices, e.g. from `scene/derive`'s
  * `polygonToExtrusionGeometry`, passed as a raw `Vec3[]`).
  *
- * Two-stage test: (1) ray-vs-infinite-plane, using the plane's normal from
- * the polygon's first two edges; (2) point-in-polygon on the hit point,
- * projected into the plane's own 2D basis (so it works for a plane at any
- * tilt/orientation, not just axis-aligned ones).
+ * Two-stage test: (1) ray-vs-infinite-plane, using the plane's normal
+ * computed via Newell's method across every edge (robust to a degenerate
+ * leading vertex triple — see `newellNormal`); (2) point-in-polygon on the
+ * hit point, projected into the plane's own 2D basis (so it works for a
+ * plane at any tilt/orientation, not just axis-aligned ones).
  *
  * @param origin Ray origin (e.g. a panel position).
  * @param direction Ray direction. Must be a unit vector (callers normalize
  *   once and reuse, e.g. `isPanelOccluded`'s `sunDirection`).
  * @param vertices The polygon's vertices, in order (>= 3), assumed planar
- *   and non-degenerate (already validated upstream — see the M3 spec's
- *   "Error handling" section).
+ *   and non-degenerate as a whole (already validated upstream — see the M3
+ *   spec's "Error handling" section) — but individual redundant collinear
+ *   vertices are expected and handled, not assumed absent.
  * @returns The distance `t` along the ray to the hit point, or `null` if
  *   the ray doesn't hit the polygon (misses the plane, hits behind the
  *   origin, or hits the plane outside the polygon's footprint).
@@ -162,11 +193,9 @@ export function rayPolygonIntersection(
   if (vertices.length < 3) return null
 
   const v0 = vertices[0]
-  const edge1 = subtract(vertices[1], v0)
-  const edge2 = subtract(vertices[2], v0)
-  const normal = cross(edge1, edge2)
+  const normal = newellNormal(vertices)
   const normalLen = length(normal)
-  if (normalLen < EPSILON) return null // degenerate (collinear) polygon
+  if (normalLen < EPSILON) return null // degenerate (collinear/coincident) polygon
 
   const denom = dot(normal, direction)
   if (Math.abs(denom) < EPSILON) return null // ray parallel to plane
@@ -178,7 +207,9 @@ export function rayPolygonIntersection(
 
   // Project the hit point and polygon into the plane's own 2D basis (u, v)
   // so point-in-polygon works regardless of the plane's 3D orientation.
-  const u = normalize(edge1)
+  const basisEdge = firstNonDegenerateEdge(vertices)
+  if (basisEdge === null) return null // degenerate: all vertices coincide
+  const u = normalize(basisEdge)
   const v = normalize(cross(normal, u))
   const project = (p: Vec3): { x: number; y: number } => {
     const rel = subtract(p, v0)
@@ -215,8 +246,13 @@ function pointInPolygon2D(
 }
 
 /**
- * Ray vs. a finite, vertical (z-axis-aligned) cylinder — used for a tree
- * obstruction's trunk.
+ * Ray vs. a finite, vertical (z-axis-aligned) *capped* cylinder — used for a
+ * tree obstruction's trunk. Models the lateral surface AND the top/bottom
+ * end-cap disks, so a ray that enters or exits through a cap (rather than
+ * the lateral surface) is still correctly detected — e.g. a near-vertical
+ * ray passing close to the axis, whose lateral-surface crossing (if any)
+ * falls outside `[zMin, zMax]` even though the ray genuinely passes through
+ * the cylinder's volume via one of its end caps.
  *
  * @param origin Ray origin.
  * @param direction Ray direction (unit vector).
@@ -224,7 +260,8 @@ function pointInPolygon2D(
  * @param radius Cylinder radius, in meters.
  * @param zMin Bottom of the cylinder, in meters (z, up).
  * @param zMax Top of the cylinder, in meters.
- * @returns Distance `t` to the nearest valid hit, or `null`.
+ * @returns Distance `t` to the nearest valid hit (lateral surface or either
+ *   end cap), or `null`.
  */
 export function rayCylinderIntersection(
   origin: Vec3,
@@ -238,54 +275,74 @@ export function rayCylinderIntersection(
   const oy = origin.y - center.y
   const dx = direction.x
   const dy = direction.y
+  const dz = direction.z
 
-  const a = dx * dx + dy * dy
   const withinHeight = (t: number): boolean => {
-    const z = origin.z + t * direction.z
+    const z = origin.z + t * dz
     return z >= zMin && z <= zMax
   }
 
-  if (a < EPSILON) {
-    // Ray is (near-)parallel to the cylinder's axis: either always inside
-    // the infinite cylinder's circular cross-section, or always outside.
-    const distSq = ox * ox + oy * oy
-    if (distSq > radius * radius) return null
-    // Inside the circle for all t: the first surface crossed, entering the
-    // height range, is at zMin or zMax depending on travel direction.
-    if (Math.abs(direction.z) < EPSILON) return null // no movement at all
-    const tToZMin = (zMin - origin.z) / direction.z
-    const tToZMax = (zMax - origin.z) / direction.z
-    return nearestValidRoot(tToZMin, tToZMax)
+  const candidates: number[] = []
+
+  // Lateral surface: skipped (not just guarded) when the ray is
+  // (near-)parallel to the axis, since the quadratic's `a` coefficient goes
+  // to zero there — any real crossing in that case is via an end cap,
+  // handled below.
+  const a = dx * dx + dy * dy
+  if (a >= EPSILON) {
+    const b = 2 * (ox * dx + oy * dy)
+    const c = ox * ox + oy * oy - radius * radius
+    const discriminant = b * b - 4 * a * c
+    if (discriminant >= 0) {
+      const sqrtDisc = Math.sqrt(discriminant)
+      const t1 = (-b - sqrtDisc) / (2 * a)
+      const t2 = (-b + sqrtDisc) / (2 * a)
+      if (withinHeight(t1)) candidates.push(t1)
+      if (withinHeight(t2)) candidates.push(t2)
+    }
   }
 
-  const b = 2 * (ox * dx + oy * dy)
-  const c = ox * ox + oy * oy - radius * radius
-  const discriminant = b * b - 4 * a * c
-  if (discriminant < 0) return null // ray misses the infinite cylinder entirely
+  // End caps: ray vs. the plane at z = zMin / zMax, then check the hit
+  // point falls within the cap's circular disk (radius from the axis).
+  // Skipped only when the ray travels purely horizontally (dz ~ 0), since
+  // it then never crosses a cap plane at all (or runs along it, a
+  // measure-zero case not worth special-casing).
+  if (Math.abs(dz) >= EPSILON) {
+    for (const zCap of [zMin, zMax]) {
+      const t = (zCap - origin.z) / dz
+      const hx = ox + t * dx
+      const hy = oy + t * dy
+      if (hx * hx + hy * hy <= radius * radius) candidates.push(t)
+    }
+  }
 
-  const sqrtDisc = Math.sqrt(discriminant)
-  const t1 = (-b - sqrtDisc) / (2 * a)
-  const t2 = (-b + sqrtDisc) / (2 * a)
-
-  const lo = Math.min(t1, t2)
-  const hi = Math.max(t1, t2)
-  if (lo > MIN_HIT_DISTANCE_M && withinHeight(lo)) return lo
-  if (hi > MIN_HIT_DISTANCE_M && withinHeight(hi)) return hi
-  return null
+  const valid = candidates.filter((t) => t > MIN_HIT_DISTANCE_M)
+  if (valid.length === 0) return null
+  return Math.min(...valid)
 }
 
 /**
- * Ray vs. a finite, upward-pointing (apex-up) circular cone — used for a
- * tree obstruction's foliage canopy, sitting atop its trunk cylinder. See
- * `treeGeometry` for how a `'tree'` `Obstacle`'s `heightM`/`radiusM` are
- * split into trunk + cone dimensions, matching `ObstructionMesh.tsx`.
+ * Ray vs. a finite, upward-pointing (apex-up) circular cone with a flat
+ * circular base cap — used for a tree obstruction's foliage canopy, sitting
+ * atop its trunk cylinder. See `treeGeometry` for how a `'tree'` `Obstacle`'s
+ * `heightM`/`radiusM` are split into trunk + cone dimensions, matching
+ * `ObstructionMesh.tsx`.
+ *
+ * Models both the lateral (sloped) surface and the flat base disk, and
+ * returns the nearest valid hit among them — a ray can enter the cone's
+ * volume through either, and picking the lateral surface's root nearest the
+ * origin isn't enough on its own: a ray that actually enters through the
+ * (unmodeled-until-now) base cap has no valid lateral root at its true entry
+ * point, so a naive "nearest lateral root" search skips straight to the
+ * lateral *exit* point instead, returning a too-large distance.
  *
  * @param origin Ray origin.
  * @param direction Ray direction (unit vector).
  * @param apex The cone's apex (tip), at the top of the canopy.
  * @param baseRadius Radius of the cone's base, in meters.
  * @param height Vertical extent of the cone (apex.z - baseZ), in meters. Must be > 0.
- * @returns Distance `t` to the nearest valid hit, or `null`.
+ * @returns Distance `t` to the nearest valid hit (lateral surface or base
+ *   cap), or `null`.
  */
 export function rayConeIntersection(
   origin: Vec3,
@@ -307,34 +364,51 @@ export function rayConeIntersection(
   // Double-napped cone equation (px + t*dx)^2 + (py + t*dy)^2 = k^2 * (ez - t*dz)^2,
   // where (ez - t*dz) is the (signed) vertical drop from the apex to the
   // point at parameter t. Solved as a quadratic in t; the z-range check
-  // below excludes the unwanted opposite nappe.
+  // below excludes the unwanted opposite nappe. This models the lateral
+  // (sloped) surface only, extended infinitely in both nappes — the base
+  // cap is handled separately below.
   const a = dx * dx + dy * dy - k * k * dz * dz
   const b = 2 * (px * dx + py * dy + k * k * ez * dz)
   const c = px * px + py * py - k * k * ez * ez
 
-  const withinFrustum = (t: number): boolean => {
+  const withinLateralFrustum = (t: number): boolean => {
     const z = origin.z + t * dz
     return z <= apex.z && z >= apex.z - height
   }
 
+  const candidates: number[] = []
+
   if (Math.abs(a) < EPSILON) {
-    if (Math.abs(b) < EPSILON) return null // degenerate: no solution
-    const t = -c / b
-    return t > MIN_HIT_DISTANCE_M && withinFrustum(t) ? t : null
+    if (Math.abs(b) >= EPSILON) {
+      const t = -c / b
+      if (withinLateralFrustum(t)) candidates.push(t)
+    }
+  } else {
+    const discriminant = b * b - 4 * a * c
+    if (discriminant >= 0) {
+      const sqrtDisc = Math.sqrt(discriminant)
+      const t1 = (-b - sqrtDisc) / (2 * a)
+      const t2 = (-b + sqrtDisc) / (2 * a)
+      if (withinLateralFrustum(t1)) candidates.push(t1)
+      if (withinLateralFrustum(t2)) candidates.push(t2)
+    }
   }
 
-  const discriminant = b * b - 4 * a * c
-  if (discriminant < 0) return null
+  // Base cap: ray vs. the flat disk at z = apex.z - height, radius
+  // baseRadius, centered on the axis. Skipped only when the ray travels
+  // purely horizontally (dz ~ 0), since it then never crosses the cap
+  // plane at all.
+  if (Math.abs(dz) >= EPSILON) {
+    const baseZ = apex.z - height
+    const t = (baseZ - origin.z) / dz
+    const hx = origin.x + t * dx - apex.x
+    const hy = origin.y + t * dy - apex.y
+    if (hx * hx + hy * hy <= baseRadius * baseRadius) candidates.push(t)
+  }
 
-  const sqrtDisc = Math.sqrt(discriminant)
-  const t1 = (-b - sqrtDisc) / (2 * a)
-  const t2 = (-b + sqrtDisc) / (2 * a)
-
-  const lo = Math.min(t1, t2)
-  const hi = Math.max(t1, t2)
-  if (lo > MIN_HIT_DISTANCE_M && withinFrustum(lo)) return lo
-  if (hi > MIN_HIT_DISTANCE_M && withinFrustum(hi)) return hi
-  return null
+  const valid = candidates.filter((t) => t > MIN_HIT_DISTANCE_M)
+  if (valid.length === 0) return null
+  return Math.min(...valid)
 }
 
 /**
@@ -514,7 +588,17 @@ function obstacleHit(
  *   ENU meters (x = east, y = north, z = up). Callers derive this from the
  *   hour's already-computed sun altitude/azimuth (see the M3 spec's
  *   "Simulation loop changes"); this module makes no assumption about how
- *   it was computed beyond it being a unit vector.
+ *   it was computed beyond it being a unit vector, and does not validate or
+ *   re-normalize it. This is a deliberate choice, not an oversight: unlike
+ *   `poaIrradiance` (a public per-hour entry point that guards its inputs),
+ *   `isPanelOccluded` and its primitives are internal geometric building
+ *   blocks called from inside a per-panel, per-hour inner loop — not a
+ *   public API boundary a caller reaches directly with raw external data.
+ *   Validating here would duplicate a check that belongs once, at the call
+ *   site that derives `sunDirection` from altitude/azimuth, not repeated on
+ *   every obstacle test. A malformed direction (NaN/zero/non-unit) fails
+ *   open — it yields no shading rather than throwing — which is verified
+ *   behavior, not an assumption.
  * @param obstacles Candidate shadow-casters (shapes and/or obstructions),
  *   already excluding the panel's own shape (a shape never occludes its
  *   own panels, per the spec).
