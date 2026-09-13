@@ -6,11 +6,11 @@ import {
   Heatmap,
   LocationPicker,
   MonthlyChartTab,
+  SimulationErrorBanner,
   SystemConfigForm,
   type Mode,
   type ResolvedLocation,
   type SystemConfig as UiSystemConfig,
-  type TabId,
 } from './ui'
 import {
   runLiveSimulation,
@@ -18,6 +18,7 @@ import {
   type LiveSimulationResult,
   type TmySimulationResult,
 } from './simulation'
+import { NasaPowerNoDataError } from './data-sources'
 
 /**
  * The two simulation modes' results, kept independently rather than in a
@@ -34,6 +35,42 @@ interface SimulationResults {
 
 const EMPTY_RESULTS: SimulationResults = { tmy: undefined, live: undefined }
 
+/**
+ * A failed `handleUpdate` run, remembered per-mode so switching tabs/mode
+ * doesn't surface a stale error for whichever mode isn't currently being
+ * looked at (see `App`'s render below, which only ever renders the entry
+ * for the currently-active `mode`).
+ *
+ * `retryable` distinguishes the two failure scenarios from issue #18:
+ * - `true` — a generic climate API failure or rate limit
+ *   (`NasaPowerRequestError`, an Open-Meteo request failure, etc.). The
+ *   same inputs might well succeed on a second attempt, so a "Retry"
+ *   button is offered.
+ * - `false` — `NasaPowerNoDataError`: the location simply has no usable
+ *   NASA POWER coverage (e.g. open ocean). Retrying with the same inputs
+ *   will fail identically every time, so no retry action is offered —
+ *   only the informational message.
+ */
+interface SimulationError {
+  mode: Mode
+  message: string
+  retryable: boolean
+}
+
+const GENERIC_FAILURE_MESSAGE =
+  "Couldn't reach the climate service. Please try again."
+const NO_COVERAGE_MESSAGE = 'No climate data available for this location.'
+
+function describeSimulationError(error: unknown): {
+  message: string
+  retryable: boolean
+} {
+  if (error instanceof NasaPowerNoDataError) {
+    return { message: NO_COVERAGE_MESSAGE, retryable: false }
+  }
+  return { message: GENERIC_FAILURE_MESSAGE, retryable: true }
+}
+
 function App() {
   const [location, setLocation] = useState<ResolvedLocation | undefined>(
     undefined,
@@ -44,6 +81,17 @@ function App() {
   const [isSystemConfigValid, setIsSystemConfigValid] = useState(false)
   const [results, setResults] = useState<SimulationResults>(EMPTY_RESULTS)
   const [isLoading, setIsLoading] = useState(false)
+  const [simulationError, setSimulationError] = useState<
+    SimulationError | undefined
+  >(undefined)
+
+  // Controlled here (rather than left uncontrolled inside AppShell) so
+  // `simulationError` can be filtered against the mode currently being
+  // looked at — see `SimulationError`'s doc comment. AppShell's `mode`/
+  // `onModeChange` controlled-prop pair exists for exactly this: a parent
+  // that needs to observe mode continuously, not just at the moment
+  // `onUpdate` fires.
+  const [mode, setMode] = useState<Mode>('tmy')
 
   // Identifies the most recently started `handleUpdate` run. A response is
   // only applied if its request is still the latest one when it resolves —
@@ -57,32 +105,43 @@ function App() {
   // config changes — neither remaining result describes the new inputs
   // anymore. Clearing (rather than e.g. a stale-data banner) is
   // deliberate: a chart with no cue that it's showing old data is
-  // actively misleading. See PR #43 review finding #1.
+  // actively misleading. See PR #43 review finding #1. Any pending
+  // simulation error is stale for the same reason — it describes a fetch
+  // for inputs that no longer apply.
   function clearStaleResults() {
     setResults(EMPTY_RESULTS)
+    setSimulationError(undefined)
   }
 
-  function handleUpdate({ mode }: { mode: Mode; activeTab: TabId }) {
+  function handleUpdate(runMode: Mode) {
     if (!location || !systemConfig || !isSystemConfigValid) {
       return
     }
 
     setIsLoading(true)
+    // Clear any previously-shown error for this mode immediately, so a
+    // retry shows the loading skeleton rather than leaving the stale error
+    // banner up underneath it (MainArea's priority order shows `error`
+    // ahead of `isLoading`).
+    setSimulationError((prev) => (prev?.mode === runMode ? undefined : prev))
     const requestId = ++latestRequestId.current
 
     const run =
-      mode === 'tmy'
+      runMode === 'tmy'
         ? runTmySimulation({ location, systemConfig })
         : runLiveSimulation({ location, systemConfig })
 
-    // Error-state UI is out of scope for this issue (see #18) — an
-    // unhandled rejection is an acceptable, if rough, failure mode for
-    // now. `isLoading` is still reset on failure so the shell doesn't get
-    // stuck in a permanent loading state.
     run
       .then((result) => {
         if (requestId !== latestRequestId.current) return
         setResults((prev) => ({ ...prev, [result.mode]: result }))
+      })
+      .catch((error: unknown) => {
+        if (requestId !== latestRequestId.current) return
+        // Deliberately does NOT touch `results` — a failed run leaves the
+        // last successful result (if any) visible, per the M1 spec's
+        // error-handling section, rather than clearing the chart.
+        setSimulationError({ mode: runMode, ...describeSimulationError(error) })
       })
       .finally(() => {
         if (requestId !== latestRequestId.current) return
@@ -90,12 +149,32 @@ function App() {
       })
   }
 
+  // Only ever surface the error for the mode currently being looked at —
+  // a TMY failure shouldn't show a banner while the user has switched to
+  // the Forecast tab in Live mode (or vice versa).
+  const activeSimulationError =
+    simulationError?.mode === mode ? simulationError : undefined
+
   return (
     <AppShell
       hasLocation={location !== undefined}
       isLoading={isLoading}
-      onUpdate={handleUpdate}
+      error={
+        activeSimulationError && (
+          <SimulationErrorBanner
+            message={activeSimulationError.message}
+            onRetry={
+              activeSimulationError.retryable
+                ? () => handleUpdate(mode)
+                : undefined
+            }
+          />
+        )
+      }
+      onUpdate={({ mode: updateMode }) => handleUpdate(updateMode)}
       updateDisabled={!location || !isSystemConfigValid}
+      mode={mode}
+      onModeChange={setMode}
       locationSlot={
         <LocationPicker
           onLocationChange={(loc) => {
