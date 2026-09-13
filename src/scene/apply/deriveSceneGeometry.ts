@@ -123,7 +123,16 @@ export function deriveSceneGeometryFromScene(
             // Offset assigned below, once sceneOrigin is known.
             offset: { x: 0, y: 0 },
             vertices: geometry.vertices,
-            tiltDeg: config.tiltDeg,
+            // Stored clamped (safeTilt), not the raw config.tiltDeg: this
+            // field feeds panelPosition's liftToPlane call below, and it
+            // must agree with the clamp already applied to `vertices` above
+            // (via polygonToExtrusionGeometry) — otherwise a shape and its
+            // own panels would be built from two different tilts. For a
+            // tiltDeg: 90 shape, tan(90°) is a finite-but-huge float
+            // (~1.6e16), not an error, so an unclamped value here produces
+            // a panel z off by ~15 orders of magnitude with nothing to
+            // catch it downstream.
+            tiltDeg: safeTilt,
             azimuthDeg: config.azimuthDeg,
           },
         ]

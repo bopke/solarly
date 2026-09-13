@@ -251,6 +251,68 @@ describe('deriveSceneGeometryFromScene', () => {
     expect(geometry).toEqual({ shapes: [], obstructions: [], panels: [] })
   })
 
+  it('clamps a tiltDeg: 90 shape consistently between its vertices and its panels (regression for #80 review)', () => {
+    // A vertical (tiltDeg: 90) wall-mount array. polygonToExtrusionGeometry
+    // only accepts tilts in [0, 90), and Math.tan(90deg) evaluates to a
+    // finite-but-huge float (~1.6e16) rather than throwing/Infinity, so an
+    // unclamped tiltDeg fed into the lift math silently produces a panel
+    // position off by ~15 orders of magnitude from its own shape's
+    // vertices. Both the shape's vertices and its panels' positions must
+    // be built from the same clamped tilt (MAX_GEOMETRY_TILT_DEG = 89.9,
+    // mirroring SceneEditorFlow's render-side clamp).
+    const state = makeState({
+      tracedShapes: [
+        { id: 'wall', kind: 'roof-face', polygon: SHAPE_A_POLYGON },
+      ],
+      shapeConfigs: [{ shapeId: 'wall', tiltDeg: 90, azimuthDeg: 90 }],
+      panelLayouts: [
+        {
+          shapeId: 'wall',
+          panelCount: 1,
+          panels: [panel({ x: 2, y: 0 })],
+        },
+      ],
+    })
+
+    const geometry = deriveSceneGeometryFromScene(state)
+
+    const wallShape = geometry.shapes.find((s) => s.id === 'wall')
+    expect(wallShape).toBeDefined()
+    // Sane, bounded z — same rough order of magnitude as the 10m polygon
+    // itself (clamped to 89.9deg, not the ~1.6e16 that tan(90deg) gives),
+    // definitely not off by 15+ orders of magnitude.
+    for (const v of wallShape!.vertices) {
+      expect(Number.isFinite(v.z)).toBe(true)
+      expect(Math.abs(v.z)).toBeLessThan(10_000)
+    }
+
+    expect(geometry.panels).toHaveLength(1)
+    const wallPanel = geometry.panels[0]
+    expect(Number.isFinite(wallPanel.position.z)).toBe(true)
+    expect(Math.abs(wallPanel.position.z)).toBeLessThan(10_000)
+
+    // Geometric consistency: the panel's plan-view center (2, 0) lifted
+    // onto the shape's *own* clamped-tilt plane (azimuth 90, safeTilt
+    // 89.9deg) should land exactly where the shape's vertices (also built
+    // from safeTilt) say that plane is: z = -(x*sin(az) + y*cos(az)) *
+    // tan(safeTilt).
+    const safeTiltRad = (89.9 * Math.PI) / 180
+    const azimuthRad = (90 * Math.PI) / 180
+    const expectedZ =
+      -(2 * Math.sin(azimuthRad) + 0 * Math.cos(azimuthRad)) *
+      Math.tan(safeTiltRad)
+    expect(wallPanel.position.z).toBeCloseTo(expectedZ, 4)
+
+    // And that expected z is indeed the same rough magnitude as the
+    // shape's own vertices (a 10m square tilted to 89.9deg reaches roughly
+    // +-2865m at its edges) -- not 15+ orders of magnitude apart.
+    const maxVertexZ = Math.max(
+      ...wallShape!.vertices.map((v) => Math.abs(v.z)),
+    )
+    expect(maxVertexZ).toBeGreaterThan(0)
+    expect(Math.abs(wallPanel.position.z) / maxVertexZ).toBeLessThan(10)
+  })
+
   it('produces an empty SceneGeometry (aside from obstructions) for a scene with only obstructions placed', () => {
     const state = makeState({
       obstructions: [
