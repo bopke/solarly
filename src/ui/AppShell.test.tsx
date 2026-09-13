@@ -33,7 +33,40 @@ describe('AppShell', () => {
     expect(screen.queryByText(/daily chart goes here/i)).not.toBeInTheDocument()
   })
 
-  it('shows an error state instead of loading/content when error is set', () => {
+  it('shows a full-panel error state instead of loading when there is no content to show underneath', () => {
+    render(
+      <AppShell
+        hasLocation
+        isLoading
+        error={<span>Couldn&apos;t reach the climate API</span>}
+      />,
+    )
+    expect(
+      screen.getByText(/couldn't reach the climate api/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('shows the error banner alongside existing tab content, rather than instead of it', () => {
+    // The "last successful result stays visible" requirement: a failed
+    // run's error must not replace the previously-rendered chart.
+    render(
+      <AppShell
+        hasLocation
+        error={<span>Couldn&apos;t reach the climate API</span>}
+        tabContent={{ daily: <div>Daily chart goes here</div> }}
+      />,
+    )
+    expect(
+      screen.getByText(/couldn't reach the climate api/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/daily chart goes here/i)).toBeInTheDocument()
+  })
+
+  it('keeps showing the error and content together even if isLoading is still true', () => {
+    // isLoading/error are expected to be mutually exclusive in practice
+    // (see MainAreaProps.error), but error must win over isLoading either
+    // way, without hiding content that's available to show.
     render(
       <AppShell
         hasLocation
@@ -45,8 +78,8 @@ describe('AppShell', () => {
     expect(
       screen.getByText(/couldn't reach the climate api/i),
     ).toBeInTheDocument()
+    expect(screen.getByText(/daily chart goes here/i)).toBeInTheDocument()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
-    expect(screen.queryByText(/daily chart goes here/i)).not.toBeInTheDocument()
   })
 
   it('shows the empty state, not the error, when no location is set', () => {

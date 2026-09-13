@@ -11,11 +11,34 @@
   color: var(--shell-text);
 }
 
-.icon {
+.errorInline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--shell-border);
+  border-radius: 8px;
+  background: var(--shell-panel, transparent);
+  text-align: left;
+  color: var(--shell-text);
+}
+
+.error .icon {
   font-size: 2rem;
+}
+
+.errorInline .icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
 }
 
 .message {
   max-width: 40ch;
   font-size: 0.95rem;
+}
+
+.errorInline .message {
+  max-width: none;
 }

@@ -12,9 +12,12 @@ export interface AppShellProps {
   /**
    * Content describing a failed simulation run (e.g. "Couldn't reach the
    * climate API — Retry"), or `undefined`/`null` when there is no error.
-   * Rendered in place of the loading/content panel — see {@link MainArea}
-   * for the exact priority order. The caller owns retry affordances; the
-   * shell only decides *when* to show this slot, not what it contains.
+   * Rendered above the active tab's existing content when there is any
+   * (so a last successful result stays visible alongside the error), or
+   * in place of the loading/content panel when there isn't — see
+   * {@link MainArea} for the exact priority order. The caller owns retry
+   * affordances; the shell only decides *when* to show this slot, not
+   * what it contains.
    */
   error?: ReactNode
   /**
