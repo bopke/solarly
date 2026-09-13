@@ -217,6 +217,57 @@ describe('App', () => {
       expect(
         screen.getByText(/couldn't reach the climate service/i),
       ).toBeInTheDocument()
+
+      // ... alongside the still-visible chart from the first, successful
+      // run — not instead of it. This is the actual "last successful
+      // result stays visible" requirement; asserting only the banner text
+      // above would pass even if the chart had been wiped from the DOM.
+      expect(screen.getAllByText(/January/).length).toBeGreaterThan(0)
+    })
+
+    it('does not let a stale in-flight request overwrite state after a config change invalidates it', async () => {
+      // Start a run that stays pending ...
+      let rejectStale!: (error: unknown) => void
+      runTmySimulation.mockReturnValueOnce(
+        new Promise((_resolve, r) => {
+          rejectStale = r
+        }),
+      )
+
+      render(<App />)
+      setLocationViaMapClick()
+      clickUpdate()
+      expect(screen.getByRole('status')).toBeInTheDocument()
+
+      // ... then change an input mid-flight, which calls
+      // clearStaleResults() and must invalidate the pending request.
+      fireEvent.change(screen.getByLabelText(/tilt/i), {
+        target: { value: '35' },
+      })
+
+      // The stale request's eventual rejection must be ignored entirely:
+      // no error banner, no stuck loading state, and it must not resolve
+      // clearStaleResults()'s own `setIsLoading(false)`'s effect away.
+      await act(async () => {
+        rejectStale(new Error('stale rejection'))
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(
+        screen.queryByText(/couldn't reach the climate service/i),
+      ).not.toBeInTheDocument()
+
+      // Clicking Update now should run the *current* (post-change) inputs
+      // as a fresh request, not be confused with the stale one.
+      runTmySimulation.mockResolvedValueOnce(makeTmyResult([makeMonth(1, 500)]))
+      clickUpdate()
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(screen.getAllByText(/January/).length).toBeGreaterThan(0)
     })
 
     it('shows a non-retryable "no data" message for NasaPowerNoDataError, without a retry button', async () => {
