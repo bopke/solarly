@@ -4,7 +4,7 @@ import type { TracedShape } from '../tracing'
 import { ConfigureShapes } from '../configure'
 import type { ShapeConfig } from '../configure'
 import { Scene3DView } from '../scene'
-import type { Obstruction, Scene3DShape } from '../scene'
+import type { Obstruction, Scene3DShape, ShapePanelLayout } from '../scene'
 import { polygonToExtrusionGeometry, type PanelDimensions } from '../derive'
 import { PANEL_PRESETS } from '../../panel-presets'
 import type { SceneDesignState, SceneFlowLocation } from './types'
@@ -125,6 +125,7 @@ export function SceneEditorFlow({
   const [shapeConfigs, setShapeConfigs] = useState<ShapeConfig[]>([])
   const [isShapeConfigValid, setIsShapeConfigValid] = useState(true)
   const [obstructions, setObstructions] = useState<Obstruction[]>([])
+  const [panelLayouts, setPanelLayouts] = useState<ShapePanelLayout[]>([])
 
   // Mount step 1 as soon as the overlay is first opened, and mount each
   // later step the first time it's actually reached — then never drop
@@ -147,6 +148,7 @@ export function SceneEditorFlow({
       shapeConfigs,
       isShapeConfigValid,
       obstructions,
+      panelLayouts,
     }),
     [
       tracedShapes,
@@ -154,6 +156,7 @@ export function SceneEditorFlow({
       shapeConfigs,
       isShapeConfigValid,
       obstructions,
+      panelLayouts,
     ],
   )
 
@@ -205,6 +208,11 @@ export function SceneEditorFlow({
       }
     })
   }, [tracedShapes, shapeConfigs])
+
+  const totalPanelCount = panelLayouts.reduce(
+    (sum, layout) => sum + layout.panelCount,
+    0,
+  )
 
   const hasTracedShapes = tracedShapes.length > 0
   const canAdvanceFromStep1 = hasTracedShapes && !hasInvalidTracedShapes
@@ -315,6 +323,7 @@ export function SceneEditorFlow({
             <Scene3DView
               shapes={scene3DShapes}
               defaultPanel={defaultPanel}
+              onPanelLayoutChange={setPanelLayouts}
               obstructions={obstructions}
               onObstructionsChange={setObstructions}
               className={styles.scene3D}
@@ -332,7 +341,9 @@ export function SceneEditorFlow({
               <h2 className={styles.applyTitle}>Apply</h2>
               <p className={styles.applyBody}>
                 {tracedShapes.length} shape
-                {tracedShapes.length === 1 ? '' : 's'} traced,{' '}
+                {tracedShapes.length === 1 ? '' : 's'} traced, {totalPanelCount}{' '}
+                panel
+                {totalPanelCount === 1 ? '' : 's'} laid out,{' '}
                 {obstructions.length} obstruction
                 {obstructions.length === 1 ? '' : 's'} placed. Applying will
                 replace the manual single-array configuration with this scene.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas, type ThreeEvent } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
@@ -6,6 +6,7 @@ import type {
   ExtrusionGeometry,
   PanelAutoFillOptions,
   PanelDimensions,
+  PanelPlacement,
   Point2D,
 } from '../derive'
 import { panelAutoFillGrid } from '../derive'
@@ -53,11 +54,40 @@ export interface Scene3DShape {
   panelFillOptions?: PanelAutoFillOptions
 }
 
+/**
+ * One shape's computed panel auto-fill result, as reported by
+ * `onPanelLayoutChange` (PR #70 review finding 2). `panelCount` is just
+ * `panels.length`, included directly so a consumer (issue #61's "Apply")
+ * doesn't need to re-derive it; `panels` is included too in case a future
+ * consumer needs per-panel placement rather than just the count. Keyed by
+ * `shapeId` (== `Scene3DShape.id` == the traced shape's own id), matching
+ * `SceneDesignState.shapeConfigs`'s `shapeId` keying so a consumer can
+ * join this with the rest of the scene state the same way.
+ */
+export interface ShapePanelLayout {
+  shapeId: string
+  panelCount: number
+  panels: PanelPlacement[]
+}
+
 export interface Scene3DViewProps {
   /** One or more configured shapes to render. */
   shapes: Scene3DShape[]
   /** Panel dimensions used for any shape that doesn't specify its own `panel`. */
   defaultPanel?: PanelDimensions
+  /**
+   * Called with the auto-filled panel layout for every shape whenever it's
+   * (re)computed — i.e. whenever `shapes`, `defaultPanel`, or a shape's own
+   * `panel`/`panelFillOptions` changes. This is the *same* computation
+   * (`panelAutoFillGrid`) that drives the rendered panel meshes, so a
+   * caller reading this gets exactly the panel count the user saw
+   * rendered, rather than having to independently re-run
+   * `panelAutoFillGrid` and risk it diverging (PR #70 review finding 2).
+   * A shape with no resolved panel dimensions (no `shape.panel` and no
+   * `defaultPanel`) reports an empty `panels`/zero `panelCount`, matching
+   * its unrendered panel mesh.
+   */
+  onPanelLayoutChange?: (layouts: ShapePanelLayout[]) => void
   /** Applied to the wrapping element, for layout/sizing by the caller. */
   className?: string
   /**
@@ -83,15 +113,20 @@ const PANEL_COLOR = '#1f3a5f'
 
 function ShapeMesh({
   shape,
-  defaultPanel,
+  panels,
   sceneOrigin,
 }: {
   shape: Scene3DShape
-  defaultPanel: PanelDimensions | undefined
+  /**
+   * This shape's auto-filled panel placements, computed once by the
+   * parent `Scene3DView` (per-shape, in its `shapePanelLayouts` memo) so
+   * the same computation backs both the rendered mesh here and the
+   * `onPanelLayoutChange` report — see `ShapePanelLayout`'s doc.
+   */
+  panels: PanelPlacement[]
   sceneOrigin: { lat: number; lon: number }
 }) {
   const { geometry } = shape
-  const panelDims = shape.panel ?? defaultPanel
 
   const offset = useMemo(
     () => offsetToSceneOrigin(geometry.origin, sceneOrigin),
@@ -102,13 +137,6 @@ function ShapeMesh({
     () => buildPlaneGeometry(geometry.vertices),
     [geometry.vertices],
   )
-
-  const panels = useMemo(() => {
-    if (!panelDims) return []
-    const footprint = geometry.vertices.map((v) => ({ x: v.x, y: v.y }))
-    return panelAutoFillGrid(footprint, panelDims, shape.panelFillOptions)
-      .panels
-  }, [geometry.vertices, panelDims, shape.panelFillOptions])
 
   const panelsGeometry = useMemo(
     () =>
@@ -225,6 +253,7 @@ function shapeFootprint(
 export function Scene3DView({
   shapes,
   defaultPanel,
+  onPanelLayoutChange,
   className,
   obstructions: controlledObstructions,
   defaultObstructions,
@@ -328,6 +357,41 @@ export function Scene3DView({
     [shapes, sceneOrigin],
   )
 
+  // Panel auto-fill, computed once per shape here (rather than inside
+  // `ShapeMesh`) so the exact same result backs both the rendered panel
+  // mesh and the `onPanelLayoutChange` report to the caller — see
+  // `ShapePanelLayout`'s doc comment (PR #70 review finding 2).
+  const shapePanelLayouts = useMemo<ShapePanelLayout[]>(
+    () =>
+      shapes.map((shape) => {
+        const panelDims = shape.panel ?? defaultPanel
+        if (!panelDims) {
+          return { shapeId: shape.id, panelCount: 0, panels: [] }
+        }
+        const footprint = shape.geometry.vertices.map((v) => ({
+          x: v.x,
+          y: v.y,
+        }))
+        const panels = panelAutoFillGrid(
+          footprint,
+          panelDims,
+          shape.panelFillOptions,
+        ).panels
+        return { shapeId: shape.id, panelCount: panels.length, panels }
+      }),
+    [shapes, defaultPanel],
+  )
+
+  const onPanelLayoutChangeRef = useRef(onPanelLayoutChange)
+  onPanelLayoutChangeRef.current = onPanelLayoutChange
+  useEffect(() => {
+    onPanelLayoutChangeRef.current?.(shapePanelLayouts)
+    // `onPanelLayoutChangeRef` is a ref precisely so a caller passing an
+    // inline arrow function (the expected common case, mirroring
+    // `onStateChange` in `SceneEditorFlow`) doesn't re-fire this effect on
+    // every parent render when `shapePanelLayouts` itself hasn't changed.
+  }, [shapePanelLayouts])
+
   const bounds = useMemo(() => {
     if (shapes.length === 0) {
       return { min: { x: -5, y: -5, z: 0 }, max: { x: 5, y: 5, z: 2 } }
@@ -401,7 +465,31 @@ export function Scene3DView({
           onClose={() => setSelectedId(null)}
         />
       )}
-      <Canvas camera={{ position: cameraPosition, fov: 45, up: [0, 0, 1] }}>
+      {/*
+        `frameloop="demand"` (PR #70 review finding 1): without this,
+        `@react-three/fiber` defaults to `frameloop="always"` — a
+        continuous ~60fps `requestAnimationFrame` loop for as long as this
+        `<Canvas>` stays mounted. Combined with `SceneEditorFlow`'s
+        deliberate never-unmount design (each step's component, including
+        this one, is mounted at most once and then only CSS
+        visibility-toggled — see that component's doc comment), that meant
+        once a user reached step 3 even once, the WebGL scene kept
+        rendering at full framerate for the rest of the page session, even
+        with the overlay fully closed. `"demand"` only re-renders when
+        something actually changes: R3F's own reconciler calls
+        `invalidate()` automatically after every commit to this scene's
+        React tree (so obstruction add/edit/delete and shape/panel prop
+        changes all still repaint), and drei's `OrbitControls` calls
+        `invalidate()` on its own `change` events (so orbiting/panning/
+        zooming still repaints). Nothing in this component mutates a
+        Three.js object imperatively outside of React state/props (no
+        `useFrame`, no direct ref mutation), so there's no path that would
+        need an explicit `invalidate()` call of its own.
+      */}
+      <Canvas
+        frameloop="demand"
+        camera={{ position: cameraPosition, fov: 45, up: [0, 0, 1] }}
+      >
         <ambientLight intensity={0.7} />
         <directionalLight position={[20, -10, 30]} intensity={0.9} />
         <OrbitControls makeDefault target={target} />
@@ -429,11 +517,11 @@ export function Scene3DView({
           <planeGeometry args={[gridSize * 2, gridSize * 2]} />
           <meshBasicMaterial visible={false} />
         </mesh>
-        {shapes.map((shape) => (
+        {shapes.map((shape, index) => (
           <ShapeMesh
             key={shape.id}
             shape={shape}
-            defaultPanel={defaultPanel}
+            panels={shapePanelLayouts[index].panels}
             sceneOrigin={sceneOrigin}
           />
         ))}

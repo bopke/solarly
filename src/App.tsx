@@ -135,6 +135,11 @@ function App() {
   )
   const hasScene = (sceneState?.tracedShapes.length ?? 0) > 0
 
+  // Bumped on every location change to force `SceneEditorFlow` to remount
+  // (via the `key` prop below) — see `handleLocationChange`'s doc comment
+  // for why.
+  const [sceneResetKey, setSceneResetKey] = useState(0)
+
   // Identifies the most recently started `handleUpdate` run. A response is
   // only applied if its request is still the latest one when it resolves —
   // otherwise a slower, now-stale in-flight request (e.g. Update clicked,
@@ -164,6 +169,36 @@ function App() {
     setResults(EMPTY_RESULTS)
     setSimulationError(undefined)
     setIsLoading(false)
+  }
+
+  // A location change already clears both simulation-result slots (see
+  // `clearStaleResults`'s doc comment) — but it did NOT touch the 3D
+  // scene-design session (`SceneEditorFlow`'s traced shapes/configs/
+  // obstructions), so a roof traced over one location's satellite
+  // imagery could silently persist and later get "Applied" against a
+  // different location once issue #61 lands, producing a wrong-answer
+  // bug (PR #70 review finding 3).
+  //
+  // `SceneEditorFlow` is deliberately never unmounted for the rest of its
+  // own lifetime (see its doc comment — that's what lets "Edit scene"
+  // preserve state across the overlay being closed and reopened), so
+  // there's no prop that would reset its internal state in place. Forcing
+  // a full remount via a changing `key` is the simplest way to get a
+  // clean step-1 slate here — it's the *same* operation `SceneEditorFlow`
+  // otherwise avoids (an intentional exception, not an accident), and is
+  // safe specifically because a location change is exactly the case where
+  // losing an in-progress scene is *correct*, not a state-preservation
+  // bug: the alternative is silently keeping a scene traced against a
+  // location that no longer applies. The overlay is also closed and
+  // `sceneState` cleared immediately, rather than left to catch up once
+  // the remounted instance's own `onStateChange` effect fires, so there's
+  // no stale-summary flash in the sidebar.
+  function handleLocationChange(loc: ResolvedLocation) {
+    setLocation(loc)
+    clearStaleResults()
+    setIsSceneOpen(false)
+    setSceneState(undefined)
+    setSceneResetKey((key) => key + 1)
   }
 
   function handleUpdate(runMode: Mode) {
@@ -236,10 +271,7 @@ function App() {
         locationSlot={
           <LocationPicker
             isHero={location === undefined}
-            onLocationChange={(loc) => {
-              setLocation(loc)
-              clearStaleResults()
-            }}
+            onLocationChange={handleLocationChange}
           />
         }
         systemConfigSlot={
@@ -283,6 +315,7 @@ function App() {
       />
       {location && (
         <SceneEditorFlow
+          key={sceneResetKey}
           open={isSceneOpen}
           location={location}
           onClose={() => setIsSceneOpen(false)}

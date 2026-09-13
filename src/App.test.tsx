@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { useEffect } from 'react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NasaPowerNoDataError } from './data-sources'
 import type {
   HourlyPoint,
@@ -65,23 +66,59 @@ vi.mock('maplibre-gl/dist/maplibre-gl.css', () => ({}))
 // `src/scene/scene/Scene3DView.test.tsx`, and
 // `src/scene/flow/SceneEditorFlow.test.tsx`. This file's job is only
 // `App`'s own wiring — the entry-point button's location-gating, opening
-// the overlay, and the compact "N shapes" summary reflecting
-// `onStateChange` — so `SceneEditorFlow` itself is stubbed out here.
+// the overlay, the compact "N shapes" summary reflecting `onStateChange`,
+// and (PR #70 review finding 3) resetting the scene on a location change
+// — so `SceneEditorFlow` itself is stubbed out here.
+//
+// `sceneFlowMounts` records one entry per *mount* of the stub (via a
+// `useEffect` with an empty dependency array) — since `App` forces a full
+// remount via a changing `key` on a location change (see
+// `handleLocationChange`'s doc comment), this is how the reset tests
+// below distinguish "a new `SceneEditorFlow` instance was created" from
+// merely "the `location` prop was updated on the same instance".
+const { sceneFlowMounts } = vi.hoisted(() => ({
+  sceneFlowMounts: [] as { lat: number }[],
+}))
+
 vi.mock('./scene/flow', () => ({
   SceneEditorFlow: ({
     open,
     location,
     onClose,
+    onStateChange,
   }: {
     open: boolean
     location: { lat: number; lon: number }
     onClose: () => void
-  }) =>
-    open ? (
+    onStateChange?: (state: unknown) => void
+  }) => {
+    useEffect(() => {
+      sceneFlowMounts.push({ lat: location.lat })
+      // Mount-only: deliberately NOT re-running on `location` prop
+      // updates, so `sceneFlowMounts`'s length reflects mount count, not
+      // location-prop-update count.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+    return open ? (
       <div data-testid="scene-editor-flow" data-lat={location.lat}>
         <button onClick={onClose}>close-scene</button>
+        <button
+          onClick={() =>
+            onStateChange?.({
+              tracedShapes: [{ id: 'shape-1' }],
+              hasInvalidTracedShapes: false,
+              shapeConfigs: [],
+              isShapeConfigValid: true,
+              obstructions: [],
+              panelLayouts: [],
+            })
+          }
+        >
+          set-scene-state
+        </button>
       </div>
-    ) : null,
+    ) : null
+  },
 }))
 
 const runTmySimulation = vi.fn()
@@ -147,11 +184,11 @@ function makeTmyResult(months: MonthlySimulation[]): TmySimulationResult {
 }
 
 /** Places a pin via the map-click fallback interaction (see LocationPicker), setting `location`. */
-function setLocationViaMapClick() {
+function setLocationViaMapClick(lat = 48.8566, lng = 2.3522) {
   const map = mapInstances[mapInstances.length - 1]
   act(() => {
     map.handlers['click']?.forEach((handler) =>
-      handler({ lngLat: { lat: 48.8566, lng: 2.3522 } }),
+      handler({ lngLat: { lat, lng } }),
     )
   })
 }
@@ -161,6 +198,10 @@ function clickUpdate() {
 }
 
 describe('App', () => {
+  beforeEach(() => {
+    sceneFlowMounts.length = 0
+  })
+
   it('renders the Solarly heading', () => {
     render(<App />)
     expect(
@@ -391,6 +432,64 @@ describe('App', () => {
       expect(
         screen.getByRole('button', { name: 'Design in 3D' }),
       ).toBeInTheDocument()
+    })
+
+    describe('resetting the scene on a location change (PR #70 review finding 3)', () => {
+      it('clears the sidebar "Edit scene" summary and closes the overlay when location changes with a scene in progress', () => {
+        render(<App />)
+        setLocationViaMapClick()
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+
+        // Scene in progress: button relabels and a summary appears.
+        expect(
+          screen.getByRole('button', { name: 'Edit scene' }),
+        ).toBeInTheDocument()
+        expect(screen.getByText(/1 shape traced/)).toBeInTheDocument()
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+
+        // Repick a different location — mirrors "trace a roof in Berlin,
+        // then repick Paris" from the reviewer's repro.
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        // Overlay closed and the stale scene summary is gone: the entry
+        // point reverts to "Design in 3D" rather than continuing to
+        // advertise the previous location's traced shape.
+        expect(
+          screen.queryByTestId('scene-editor-flow'),
+        ).not.toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Design in 3D' }),
+        ).toBeInTheDocument()
+        expect(
+          screen.queryByRole('button', { name: 'Edit scene' }),
+        ).not.toBeInTheDocument()
+        expect(screen.queryByText(/shape traced/)).not.toBeInTheDocument()
+      })
+
+      it('forces a fresh SceneEditorFlow instance (remount) on a location change, not just a prop update', () => {
+        render(<App />)
+        setLocationViaMapClick()
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        // A prop update alone (same mounted instance) would leave this at
+        // 1 — a new entry means `SceneEditorFlow` was actually remounted
+        // with a clean internal-state slate, per `handleLocationChange`'s
+        // doc comment in `App.tsx`.
+        expect(sceneFlowMounts).toHaveLength(2)
+        expect(sceneFlowMounts.at(-1)).toEqual({ lat: 41.9028 })
+      })
+
+      it('does not reset the scene when location is set for the first time (no prior scene)', () => {
+        render(<App />)
+        setLocationViaMapClick()
+
+        // Only one mount so far, from the initial location being set.
+        expect(sceneFlowMounts).toHaveLength(1)
+      })
     })
   })
 })

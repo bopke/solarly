@@ -11,10 +11,25 @@ import { describe, expect, it, vi } from 'vitest'
 // on — the actual WebGL rendering, camera controls, and lighting are NOT
 // covered by these tests and need manual/browser verification (see the PR
 // description).
+// Captures every prop `<Canvas>` is rendered with, so the `frameloop`
+// prop specifically (PR #70 review finding 1) can be asserted on without
+// a real WebGL canvas — declared via `vi.hoisted` since `vi.mock`
+// factories run before other module-scope code and can't close over an
+// ordinary `const`.
+const { canvasPropsLog } = vi.hoisted(() => ({
+  canvasPropsLog: [] as Record<string, unknown>[],
+}))
+
 vi.mock('@react-three/fiber', () => ({
-  Canvas: ({ children }: { children?: React.ReactNode }) => (
-    <div data-testid="r3f-canvas">{children}</div>
-  ),
+  Canvas: ({
+    children,
+    ...rest
+  }: {
+    children?: React.ReactNode
+  } & Record<string, unknown>) => {
+    canvasPropsLog.push(rest)
+    return <div data-testid="r3f-canvas">{children}</div>
+  },
 }))
 
 vi.mock('@react-three/drei', () => ({
@@ -48,6 +63,59 @@ describe('Scene3DView', () => {
     const { getByTestId } = render(<Scene3DView shapes={[]} />)
     expect(getByTestId('r3f-canvas')).toBeInTheDocument()
     expect(getByTestId('orbit-controls')).toBeInTheDocument()
+  })
+
+  it('sets frameloop="demand" on the Canvas, not the default continuous "always" loop (PR #70 review finding 1)', () => {
+    canvasPropsLog.length = 0
+    render(<Scene3DView shapes={[]} />)
+    expect(canvasPropsLog).toHaveLength(1)
+    expect(canvasPropsLog[0].frameloop).toBe('demand')
+  })
+
+  it('reports each shape’s auto-filled panel count/placements via onPanelLayoutChange (PR #70 review finding 2)', () => {
+    const shapes = [
+      {
+        id: 'a',
+        geometry: polygonToExtrusionGeometry(flatSquare(0, 0, 0.001), 20, 180),
+      },
+      {
+        id: 'b',
+        geometry: polygonToExtrusionGeometry(flatSquare(0.01, 0), 20, 180),
+      },
+    ]
+    const onPanelLayoutChange = vi.fn()
+    render(
+      <Scene3DView
+        shapes={shapes}
+        defaultPanel={genericResidentialPanel}
+        onPanelLayoutChange={onPanelLayoutChange}
+      />,
+    )
+    expect(onPanelLayoutChange).toHaveBeenCalled()
+    const layouts = onPanelLayoutChange.mock.calls.at(-1)?.[0]
+    expect(layouts).toHaveLength(2)
+    expect(layouts[0].shapeId).toBe('a')
+    // The small shape (0.001deg) fits exactly one panel; the count here
+    // must match the number of panel meshes actually rendered for it, not
+    // an independently-recomputed value — see the doc comment on
+    // `Scene3DView`'s `shapePanelLayouts` memo.
+    expect(layouts[0].panelCount).toBe(layouts[0].panels.length)
+    expect(layouts[0].panelCount).toBeGreaterThan(0)
+  })
+
+  it('reports zero panels for a shape with no resolvable panel dimensions', () => {
+    const shapes = [
+      {
+        id: 'a',
+        geometry: polygonToExtrusionGeometry(flatSquare(0, 0), 20, 180),
+      },
+    ]
+    const onPanelLayoutChange = vi.fn()
+    render(
+      <Scene3DView shapes={shapes} onPanelLayoutChange={onPanelLayoutChange} />,
+    )
+    const layouts = onPanelLayoutChange.mock.calls.at(-1)?.[0]
+    expect(layouts).toEqual([{ shapeId: 'a', panelCount: 0, panels: [] }])
   })
 
   it('renders one plane mesh per shape, with no panel mesh when no panel dims are given', () => {

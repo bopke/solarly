@@ -97,15 +97,23 @@ interface FakeObstruction {
   radiusM: number
 }
 
+interface FakePanelLayout {
+  shapeId: string
+  panelCount: number
+  panels: unknown[]
+}
+
 vi.mock('../scene', () => ({
   Scene3DView: ({
     shapes,
     obstructions,
     onObstructionsChange,
+    onPanelLayoutChange,
   }: {
     shapes: { id: string }[]
     obstructions?: FakeObstruction[]
     onObstructionsChange?: (obstructions: FakeObstruction[]) => void
+    onPanelLayoutChange?: (layouts: FakePanelLayout[]) => void
   }) => (
     <div data-testid="scene3d-step">
       <div data-testid="scene3d-shape-count">{shapes.length}</div>
@@ -124,6 +132,19 @@ vi.mock('../scene', () => ({
         }
       >
         add-obstruction
+      </button>
+      <button
+        onClick={() =>
+          onPanelLayoutChange?.(
+            shapes.map((s) => ({
+              shapeId: s.id,
+              panelCount: 12,
+              panels: [],
+            })),
+          )
+        }
+      >
+        report-panels
       </button>
     </div>
   ),
@@ -214,6 +235,30 @@ describe('SceneEditorFlow', () => {
     expect(
       screen.queryByRole('button', { name: 'Next' }),
     ).not.toBeInTheDocument()
+  })
+
+  it('surfaces Scene3DView-reported panel layouts on SceneDesignState (PR #70 review finding 2)', async () => {
+    const user = userEvent.setup()
+    const onApply = vi.fn()
+    render(<Harness onApply={onApply} />)
+
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    await user.click(screen.getByRole('button', { name: 'report-panels' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    // Step 4 shows the total across shapes, and Apply hands the same
+    // per-shape layouts issue #61 needs onward — not a recomputed value.
+    expect(screen.getByText(/12 panels/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    const state = onApply.mock.calls[0][0] as SceneDesignState
+    expect(state.panelLayouts).toEqual([
+      { shapeId: 'shape-1', panelCount: 12, panels: [] },
+    ])
   })
 
   it('calls onApply with the full aggregated state when Apply is clicked', async () => {
