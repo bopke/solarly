@@ -413,6 +413,7 @@ export function SceneEditorFlow({
               onPanelLayoutChange={setPanelLayouts}
               obstructions={obstructions}
               onObstructionsChange={setObstructions}
+              location={location}
               className={styles.scene3D}
             />
           </div>

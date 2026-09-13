@@ -54,11 +54,15 @@ export function ObstructionMesh({
         onClick={handleClick}
         name={`obstruction-tree-${id}`}
       >
-        <mesh position={[0, trunkHeight / 2, 0]}>
+        <mesh position={[0, trunkHeight / 2, 0]} castShadow receiveShadow>
           <cylinderGeometry args={[trunkRadius, trunkRadius, trunkHeight, 8]} />
           <meshStandardMaterial color={TRUNK_COLOR} />
         </mesh>
-        <mesh position={[0, trunkHeight + foliageHeight / 2, 0]}>
+        <mesh
+          position={[0, trunkHeight + foliageHeight / 2, 0]}
+          castShadow
+          receiveShadow
+        >
           <coneGeometry args={[radiusM, foliageHeight, 12]} />
           <meshStandardMaterial
             color={selected ? FOLIAGE_COLOR_SELECTED : FOLIAGE_COLOR}
@@ -75,7 +79,7 @@ export function ObstructionMesh({
       onClick={handleClick}
       name={`obstruction-building-${id}`}
     >
-      <mesh position={[0, heightM / 2, 0]}>
+      <mesh position={[0, heightM / 2, 0]} castShadow receiveShadow>
         <boxGeometry args={[radiusM * 2, heightM, radiusM * 2]} />
         <meshStandardMaterial
           color={selected ? BUILDING_COLOR_SELECTED : BUILDING_COLOR}

@@ -57,6 +57,10 @@ const GIZMO_MESH_COUNT = 2
 // click-to-place obstructions (issue #58), regardless of shape/obstruction
 // count.
 const GROUND_PLANE_MESH_COUNT = 1
+// Plus one separate visible shadow-receiving ground <mesh> (issue #76) —
+// see Scene3DView.tsx's "ground-shadow" doc comment for why this can't be
+// merged into the (invisible) ground-plane mesh above.
+const GROUND_SHADOW_MESH_COUNT = 1
 
 describe('Scene3DView', () => {
   it('renders the mocked canvas and orbit controls with no shapes', () => {
@@ -134,7 +138,10 @@ describe('Scene3DView', () => {
     // dimensions were supplied at either the shape or component level,
     // plus the gizmo's fixed 2 meshes.
     expect(container.querySelectorAll('mesh')).toHaveLength(
-      shapes.length + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT,
+      shapes.length +
+        GIZMO_MESH_COUNT +
+        GROUND_PLANE_MESH_COUNT +
+        GROUND_SHADOW_MESH_COUNT,
     )
   })
 
@@ -150,7 +157,7 @@ describe('Scene3DView', () => {
     )
     // Plane mesh + panel mesh, plus the gizmo's fixed 2 meshes.
     expect(container.querySelectorAll('mesh')).toHaveLength(
-      2 + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT,
+      2 + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT + GROUND_SHADOW_MESH_COUNT,
     )
   })
 
@@ -190,6 +197,77 @@ function clickGround(element: Element, x: number, y: number) {
   })
   fireEvent(element, event)
 }
+
+describe('Scene3DView sun-position scrubber (issue #76)', () => {
+  const shapes = [
+    {
+      id: 'a',
+      geometry: polygonToExtrusionGeometry(flatSquare(0, 0), 20, 180),
+    },
+  ]
+
+  it('renders the day-of-year and time-of-day scrubber controls', () => {
+    render(<Scene3DView shapes={shapes} />)
+    expect(screen.getByLabelText(/day of year/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/time of day/i)).toBeInTheDocument()
+  })
+
+  it('renders a shadow-casting directionalLight positioned along the sun direction at the default (summer midday) setting', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const light = container.querySelector('directionallight')
+    expect(light).not.toBeNull()
+    // A real value is present (not e.g. "0,0,0") — the exact number is
+    // covered precisely by sunDirection.test.ts; this just confirms the
+    // rendered light is actually wired to a computed position.
+    expect(light?.getAttribute('position')).toMatch(
+      /-?\d+(\.\d+)?,-?\d+(\.\d+)?,-?\d+(\.\d+)?/,
+    )
+    expect(screen.getByText(/sun altitude/i)).toBeInTheDocument()
+  })
+
+  it('moving the time-of-day slider changes the rendered light position (shadows move)', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const before = container
+      .querySelector('directionallight')
+      ?.getAttribute('position')
+
+    fireEvent.change(screen.getByLabelText(/time of day/i), {
+      target: { value: '9' },
+    })
+
+    const after = container
+      .querySelector('directionallight')
+      ?.getAttribute('position')
+    expect(after).not.toBe(before)
+  })
+
+  it('moving the day-of-year slider also changes the rendered light position', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const before = container
+      .querySelector('directionallight')
+      ?.getAttribute('position')
+
+    fireEvent.change(screen.getByLabelText(/day of year/i), {
+      target: { value: '355' },
+    })
+
+    const after = container
+      .querySelector('directionallight')
+      ?.getAttribute('position')
+    expect(after).not.toBe(before)
+  })
+
+  it('omits the shadow-casting light and shows a status message when the scrubbed time puts the sun below the horizon', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    // Berlin (this suite's default shape origin), day 172 (summer), 01:00
+    // UTC (~03:00 local) is well before sunrise.
+    fireEvent.change(screen.getByLabelText(/time of day/i), {
+      target: { value: '1' },
+    })
+    expect(container.querySelector('directionallight')).toBeNull()
+    expect(screen.getByText(/sun below horizon/i)).toBeInTheDocument()
+  })
+})
 
 describe('Scene3DView obstructions', () => {
   const shapes = [
