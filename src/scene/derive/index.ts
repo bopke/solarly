@@ -15,6 +15,7 @@ export type { LatLon, Point2D } from './geo'
 export {
   normalizeDegrees,
   pointInPolygon,
+  polygonAreaCentroidLocal,
   polygonAreaM2,
   polygonCentroid,
   projectPolygonToLocalMeters,

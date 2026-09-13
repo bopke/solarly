@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   normalizeDegrees,
   pointInPolygon,
+  polygonAreaCentroidLocal,
   polygonAreaM2,
   polygonCentroid,
   toLocalMeters,
@@ -60,6 +61,66 @@ describe('polygonCentroid', () => {
 
   it('throws on an empty polygon', () => {
     expect(() => polygonCentroid([])).toThrow()
+  })
+})
+
+describe('polygonAreaCentroidLocal', () => {
+  it('is the geometric center for a symmetric square (matches the vertex mean here)', () => {
+    const centroid = polygonAreaCentroidLocal([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    ])
+    expect(centroid.x).toBeCloseTo(5, 9)
+    expect(centroid.y).toBeCloseTo(5, 9)
+  })
+
+  it('is unaffected by inserting extra collinear vertices along an edge (unlike a vertex mean)', () => {
+    const square = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    ]
+    const densified = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      // Extra collinear points along the top edge.
+      { x: 7, y: 10 },
+      { x: 5, y: 10 },
+      { x: 2, y: 10 },
+      { x: 0, y: 10 },
+    ]
+    const centroid = polygonAreaCentroidLocal(square)
+    const densifiedCentroid = polygonAreaCentroidLocal(densified)
+    expect(densifiedCentroid.x).toBeCloseTo(centroid.x, 9)
+    expect(densifiedCentroid.y).toBeCloseTo(centroid.y, 9)
+  })
+
+  it('pulls toward the wider end of an asymmetric (trapezoid) shape, unlike a vertex mean', () => {
+    // A trapezoid with a long base (0..10 at y=0) and a short top (4..6 at
+    // y=10): the true area centroid sits below the vertex-mean height,
+    // pulled toward the wider (more massive) base.
+    const trapezoid = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 6, y: 10 },
+      { x: 4, y: 10 },
+    ]
+    const vertexMeanY = 5 // (0 + 0 + 10 + 10) / 4
+    const centroid = polygonAreaCentroidLocal(trapezoid)
+    expect(centroid.y).toBeLessThan(vertexMeanY)
+  })
+
+  it('throws on a polygon with fewer than 3 points', () => {
+    expect(() =>
+      polygonAreaCentroidLocal([
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+      ]),
+    ).toThrow()
   })
 })
 

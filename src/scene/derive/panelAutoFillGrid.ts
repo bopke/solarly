@@ -10,19 +10,44 @@
  * ## Simplification: axis-aligned grid + point-in-polygon, not true packing
  *
  * This computes an axis-aligned grid over the footprint's bounding box
- * (aligned to the local x/y axes — i.e. the tilted plane's own local
- * "east"/"north"-ish in-plane axes once tilt/azimuth are applied by the
- * renderer, not compass directions), and includes a cell only if its
- * center falls inside the traced polygon (via `pointInPolygon`). This is
- * NOT a general polygon-packing algorithm — it won't rotate the grid to
- * better match an angled roof edge, and a cell can be marked "inside"
- * while one of its corners pokes slightly outside an irregular polygon
- * (or vice-versa near a concave edge). That's an accepted simplification
- * for M2: real panel layouts in practice are laid out on an axis-aligned
- * grid anyway (rows/columns), and the per-cell center test is a
- * reasonable, cheap approximation of "does this panel fit" — full
- * corner-containment or true packing can be revisited later if traced
- * shapes turn out to need it.
+ * (aligned to the local x/y axes, not compass directions), and includes a
+ * cell only if its center falls inside the traced polygon (via
+ * `pointInPolygon`). This is NOT a general polygon-packing algorithm — it
+ * won't rotate the grid to better match an angled roof edge, and a cell
+ * can be marked "inside" while one of its corners pokes slightly outside
+ * an irregular polygon (or vice-versa near a concave edge). That's an
+ * accepted simplification for M2: real panel layouts in practice are laid
+ * out on an axis-aligned grid anyway (rows/columns), and the per-cell
+ * center test is a reasonable, cheap approximation of "does this panel
+ * fit" — full corner-containment or true packing can be revisited later
+ * if traced shapes turn out to need it.
+ *
+ * ## Coordinate space: plan-view, not the true tilted surface
+ *
+ * `footprintM` is expected in the same *plan-view* local-meters x/y as the
+ * traced polygon (e.g. `projectPolygonToLocalMeters(polygon).points`) —
+ * NOT foreshortened along the slope direction. This lines up with
+ * `polygonToExtrusionGeometry`'s tilted `vertices`: per that module's
+ * plan-view fix, a tilted vertex's own `(x, y)` is always identical to its
+ * plan-view `(x, y)` (only `z` is lifted), so a panel `center: Point2D`
+ * from this function maps onto the tilted plane via that same `(x, y) ->
+ * z` rule (`z = -(x * slope.x + y * slope.y) * tan(tiltDeg)`, using the
+ * slope direction from the shape's chosen azimuth) — a renderer can look
+ * up each panel's 3D center this way without this module needing to know
+ * about tilt/azimuth at all.
+ *
+ * What this function does NOT yet do: panel `widthMm`/`heightMm` are laid
+ * out at their real, physical (on-slope) size in this plan-view grid, so
+ * each panel's *plan-view footprint* is actually smaller than its grid
+ * cell along the slope axis (by the same `cos(tiltDeg)` foreshortening
+ * that affects the traced polygon itself) — meaning this grid is
+ * conservative (fewer panels than would truly fit) rather than
+ * over-fitting, but isn't yet computing the tighter, foreshortened
+ * plan-view cell size that would fit the true maximum panel count.
+ * Tracked as a follow-up for whichever of #57/#59 renders and composes
+ * this with `polygonToExtrusionGeometry`; not fixed here to avoid
+ * changing this function's already-tested row/col/center semantics on a
+ * hunch.
  *
  * Grid indices (`row`/`col`) are stable across the *entire bounding-box
  * grid*, not just the cells that end up inside the polygon — that's what

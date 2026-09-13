@@ -10,12 +10,25 @@ import { suggestAzimuth } from './suggestAzimuth'
  * edges' lat/lon deltas alone (without needing to account for scaling)
  * determine which pair of edges is longer.
  *
- * See `suggestAzimuth.ts`'s module doc for the "perpendicular pointing
- * away from the polygon's centroid" convention these expected values
- * follow, and for why the longest-edge choice is inherently ambiguous
- * (hence picking test cases with an unambiguous, hand-reasoned expected
- * direction).
+ * See `suggestAzimuth.ts`'s module doc for the hemisphere-based
+ * disambiguation convention these expected values follow, and for why the
+ * longest-edge choice is inherently ambiguous (hence picking test cases
+ * with an unambiguous, hand-reasoned expected direction).
  */
+
+/** All cyclic rotations of a vertex list, in both winding orders. */
+function allTracingOrders(
+  polygon: { lat: number; lon: number }[],
+): { lat: number; lon: number }[][] {
+  const reversed = [...polygon].reverse()
+  const orders: { lat: number; lon: number }[][] = []
+  for (const base of [polygon, reversed]) {
+    for (let start = 0; start < base.length; start++) {
+      orders.push([...base.slice(start), ...base.slice(0, start)])
+    }
+  }
+  return orders
+}
 
 describe('suggestAzimuth', () => {
   it('rejects a degenerate polygon (fewer than 3 vertices)', () => {
@@ -27,47 +40,75 @@ describe('suggestAzimuth', () => {
     ).toThrow()
   })
 
-  it('a wide (E-W) rectangle whose north edge comes first suggests north (0 degrees)', () => {
-    // Vertices in order NW, NE, SE, SW: the first edge (NW->NE) is the
-    // north edge, longer (0.04 deg lon) than the side edges (0.02 deg
-    // lat) — so it's picked as the longest edge. Its perpendicular
-    // pointing away from the centroid (which sits south of this edge) is
-    // due north.
-    const polygon = [
+  it('a wide (E-W) rectangle at the equator suggests south (180 degrees), regardless of which corner tracing started from or winding order', () => {
+    // Long edges (0.04 deg lon) run east-west; perpendicular to them is
+    // due north/south. In the northern hemisphere (including the equator,
+    // lat=0), the equator-facing choice is south.
+    const rectangle = [
       { lat: 0.01, lon: -0.02 }, // NW
       { lat: 0.01, lon: 0.02 }, // NE
       { lat: -0.01, lon: 0.02 }, // SE
       { lat: -0.01, lon: -0.02 }, // SW
     ]
-    expect(suggestAzimuth(polygon)).toBeCloseTo(0, 3)
+    for (const polygon of allTracingOrders(rectangle)) {
+      expect(suggestAzimuth(polygon)).toBeCloseTo(180, 3)
+    }
   })
 
-  it('the same rectangle, but with the south edge listed first, suggests south (180 degrees)', () => {
-    // Vertices in order SW, SE, NE, NW: the first edge (SW->SE) is the
-    // south edge — same length as the north edge (a tie), but encountered
-    // first, so it's the one picked. Its perpendicular pointing away from
-    // the centroid (north of this edge) is due south.
-    const polygon = [
-      { lat: -0.01, lon: -0.02 }, // SW
-      { lat: -0.01, lon: 0.02 }, // SE
-      { lat: 0.01, lon: 0.02 }, // NE
-      { lat: 0.01, lon: -0.02 }, // NW
+  it('the same wide rectangle in the southern hemisphere suggests north (0 degrees)', () => {
+    const rectangle = [
+      { lat: -30.01, lon: -0.02 },
+      { lat: -30.01, lon: 0.02 },
+      { lat: -30.03, lon: 0.02 },
+      { lat: -30.03, lon: -0.02 },
     ]
-    expect(suggestAzimuth(polygon)).toBeCloseTo(180, 3)
+    for (const polygon of allTracingOrders(rectangle)) {
+      expect(suggestAzimuth(polygon)).toBeCloseTo(0, 3)
+    }
   })
 
-  it('a tall (N-S) rectangle whose east edge comes first suggests east (90 degrees)', () => {
-    // Vertices in order SE, NE, NW, SW: the first edge (SE->NE) is the
-    // east edge, longer (0.04 deg lat) than the top/bottom edges (0.02
-    // deg lon) — its perpendicular pointing away from the centroid (west
-    // of this edge) is due east.
-    const polygon = [
+  it('a tall (N-S) rectangle at the equator suggests a consistent azimuth regardless of tracing order (exact bilateral symmetry, no hemisphere cue)', () => {
+    // Long edges (0.04 deg lat) run north-south; both perpendiculars (east
+    // and west) are equally equator-facing, so this exercises the
+    // extent/fixed tiebreak rather than the hemisphere rule. The point of
+    // this test isn't which of east/west gets picked (genuinely
+    // arbitrary for an exactly symmetric shape) — it's that the pick is
+    // the SAME for every tracing order.
+    const rectangle = [
       { lat: -0.02, lon: 0.01 }, // SE
       { lat: 0.02, lon: 0.01 }, // NE
       { lat: 0.02, lon: -0.01 }, // NW
       { lat: -0.02, lon: -0.01 }, // SW
     ]
-    expect(suggestAzimuth(polygon)).toBeCloseTo(90, 3)
+    const results = allTracingOrders(rectangle).map((polygon) =>
+      suggestAzimuth(polygon),
+    )
+    const [first, ...rest] = results
+    for (const result of rest) {
+      expect(result).toBeCloseTo(first, 3)
+    }
+    expect(first === 90 || first === 270).toBe(true)
+  })
+
+  it('densifying one edge with extra collinear points does not change the suggested azimuth', () => {
+    const rectangle = [
+      { lat: 0.01, lon: -0.02 }, // NW
+      { lat: 0.01, lon: 0.02 }, // NE
+      { lat: -0.01, lon: 0.02 }, // SE
+      { lat: -0.01, lon: -0.02 }, // SW
+    ]
+    const densified = [
+      { lat: 0.01, lon: -0.02 }, // NW
+      { lat: 0.01, lon: 0.02 }, // NE
+      { lat: -0.01, lon: 0.02 }, // SE
+      // Extra collinear points along the south edge — same shape, denser trace.
+      { lat: -0.01, lon: 0.01 },
+      { lat: -0.01, lon: 0 },
+      { lat: -0.01, lon: -0.01 },
+      { lat: -0.01, lon: -0.02 }, // SW
+    ]
+    expect(suggestAzimuth(densified)).toBeCloseTo(suggestAzimuth(rectangle), 3)
+    expect(suggestAzimuth(densified)).toBeCloseTo(180, 3)
   })
 
   it('always returns a value in [0, 360)', () => {

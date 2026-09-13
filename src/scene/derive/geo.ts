@@ -69,6 +69,51 @@ export function polygonCentroid(polygon: LatLon[]): LatLon {
 }
 
 /**
+ * True area-weighted (shoelace) centroid of a polygon already in local
+ * meters — unlike `polygonCentroid`'s vertex mean, this is invariant to
+ * inserting extra collinear vertices along an edge (the polygon's shape,
+ * and therefore its area centroid, doesn't change just because it was
+ * traced more densely in one place). That invariance matters for any
+ * *decision* made from the centroid — see `suggestAzimuth.ts`'s use of
+ * this, and its module doc for why `polygonCentroid`'s vertex mean is the
+ * wrong tool for that specific job (even though it's a perfectly fine,
+ * simpler choice for the *projection origin* role `polygonCentroid` plays
+ * elsewhere).
+ */
+export function polygonAreaCentroidLocal(points: Point2D[]): Point2D {
+  if (points.length < 3) {
+    throw new Error(
+      'polygonAreaCentroidLocal: polygon must have at least 3 points',
+    )
+  }
+  let signedAreaTimes2 = 0
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % points.length]
+    const cross = a.x * b.y - b.x * a.y
+    signedAreaTimes2 += cross
+    cx += (a.x + b.x) * cross
+    cy += (a.y + b.y) * cross
+  }
+  if (signedAreaTimes2 === 0) {
+    // Degenerate (zero-area / collinear) polygon: the shoelace centroid
+    // formula divides by zero here, so fall back to the vertex mean.
+    const n = points.length
+    const sum = points.reduce(
+      (acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }),
+      { x: 0, y: 0 },
+    )
+    return { x: sum.x / n, y: sum.y / n }
+  }
+  return {
+    x: cx / (3 * signedAreaTimes2),
+    y: cy / (3 * signedAreaTimes2),
+  }
+}
+
+/**
  * Converts a lat/lon point to local meters-east/meters-north relative to
  * `origin`, via an equirectangular projection (longitude scaled by
  * `cos(origin.lat)` to account for meridian convergence). See module doc

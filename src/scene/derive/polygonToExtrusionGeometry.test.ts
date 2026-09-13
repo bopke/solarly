@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { polygonToExtrusionGeometry } from './polygonToExtrusionGeometry'
+import type { Vec3 } from './polygonToExtrusionGeometry'
 
 /**
  * The square polygon below is constructed the same way as the module's
@@ -18,6 +19,38 @@ const SQUARE_20M: { lat: number; lon: number }[] = [
   { lat: 45.00008993216059, lon: 9.999872816718797 }, // NW
 ]
 
+function subtract(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
+}
+
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  }
+}
+
+function normalize(v: Vec3): Vec3 {
+  const magnitude = Math.hypot(v.x, v.y, v.z)
+  return { x: v.x / magnitude, y: v.y / magnitude, z: v.z / magnitude }
+}
+
+/**
+ * Cross-checks the returned `normal` against a normal computed
+ * independently from the returned `vertices`' own edges (via the first
+ * two edges' cross product) — see issue #1 in the PR #64 review: the
+ * `normal` and `vertices` previously described two different planes,
+ * off by an exact 180-degree horizontal flip, and no existing test
+ * caught it because every test checked `normal` and `vertices` in
+ * isolation rather than their relationship.
+ */
+function geometricNormalFromVertices(vertices: Vec3[]): Vec3 {
+  const edge1 = subtract(vertices[1], vertices[0])
+  const edge2 = subtract(vertices[2], vertices[1])
+  return normalize(cross(edge1, edge2))
+}
+
 describe('polygonToExtrusionGeometry', () => {
   it('rejects a degenerate polygon (fewer than 3 vertices)', () => {
     expect(() =>
@@ -31,6 +64,12 @@ describe('polygonToExtrusionGeometry', () => {
     ).toThrow()
   })
 
+  it('rejects tiltDeg outside [0, 90) — a vertical surface has no well-defined plan-view footprint', () => {
+    expect(() => polygonToExtrusionGeometry(SQUARE_20M, 90)).toThrow()
+    expect(() => polygonToExtrusionGeometry(SQUARE_20M, 91)).toThrow()
+    expect(() => polygonToExtrusionGeometry(SQUARE_20M, -1)).toThrow()
+  })
+
   it('tilt=0 produces a flat plane: all z=0, normal straight up, area = the square footprint (400m^2)', () => {
     const geometry = polygonToExtrusionGeometry(SQUARE_20M, 0)
     for (const v of geometry.vertices) {
@@ -42,31 +81,72 @@ describe('polygonToExtrusionGeometry', () => {
     expect(geometry.areaM2).toBeCloseTo(400, 1)
   })
 
-  it('tilting preserves area (a rigid rotation) at tilt=30, azimuth=180', () => {
-    const geometry = polygonToExtrusionGeometry(SQUARE_20M, 30, 180)
-    expect(geometry.areaM2).toBeCloseTo(400, 1)
-
-    // Reconstruct the tilted plane's own area from its 3D vertices via the
-    // shoelace formula projected onto the plane (equivalently: the
-    // polygon is planar and congruent to the flat footprint, so summing
-    // 3D edge cross products and taking the magnitude gives the true
-    // surface area — a simpler equivalent check here is that every edge
-    // length matches the flat footprint's edge lengths, since a rigid
-    // rotation preserves distances).
-    const flat = polygonToExtrusionGeometry(SQUARE_20M, 0)
-    for (let i = 0; i < geometry.vertices.length; i++) {
-      const a = geometry.vertices[i]
-      const b = geometry.vertices[(i + 1) % geometry.vertices.length]
-      const flatA = flat.vertices[i]
-      const flatB = flat.vertices[(i + 1) % flat.vertices.length]
-      const tiltedEdgeLength = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z)
-      const flatEdgeLength = Math.hypot(
-        flatB.x - flatA.x,
-        flatB.y - flatA.y,
-        flatB.z - flatA.z,
-      )
-      expect(tiltedEdgeLength).toBeCloseTo(flatEdgeLength, 3)
+  it('the returned normal always agrees with the plane the returned vertices actually describe', () => {
+    // Direct regression test for PR #64 review issue #1: cross-product the
+    // returned vertices' own edges and confirm it matches the returned
+    // `normal`, across several tilt/azimuth combinations (not just the
+    // degenerate tilt=90 case, which is excluded now — see the
+    // `tiltDeg` range test above — because it made the flip invisible).
+    for (const [tilt, azimuth] of [
+      [30, 180],
+      [30, 0],
+      [45, 90],
+      [20, 200],
+      [60, 45],
+    ]) {
+      const geometry = polygonToExtrusionGeometry(SQUARE_20M, tilt, azimuth)
+      const geometricNormal = geometricNormalFromVertices(geometry.vertices)
+      expect(geometricNormal.x).toBeCloseTo(geometry.normal.x, 6)
+      expect(geometricNormal.y).toBeCloseTo(geometry.normal.y, 6)
+      expect(geometricNormal.z).toBeCloseTo(geometry.normal.z, 6)
     }
+  })
+
+  it('a south-facing surface (azimuth=180) slopes down toward the south: southern vertices are lower', () => {
+    // The ridge (high side) of a south-facing roof is on its north side.
+    const geometry = polygonToExtrusionGeometry(SQUARE_20M, 30, 180)
+    const southZ = geometry.vertices
+      .filter((_, i) => SQUARE_20M[i].lat < 45)
+      .map((v) => v.z)
+    const northZ = geometry.vertices
+      .filter((_, i) => SQUARE_20M[i].lat > 45)
+      .map((v) => v.z)
+    for (const z of southZ) {
+      for (const northVal of northZ) {
+        expect(z).toBeLessThan(northVal)
+      }
+    }
+  })
+
+  it('projecting the tilted vertices back to the xy-plane (dropping z) recovers the original plan-view polygon', () => {
+    // The traced polygon is a plan-view footprint (see module doc); the
+    // tilted "true surface" vertices must project straight back down onto
+    // it, or the rendered roof won't register with the traced outline /
+    // satellite imagery it came from.
+    const flat = polygonToExtrusionGeometry(SQUARE_20M, 0)
+    for (const [tilt, azimuth] of [
+      [10, 0],
+      [30, 180],
+      [45, 90],
+      [70, 315],
+    ]) {
+      const geometry = polygonToExtrusionGeometry(SQUARE_20M, tilt, azimuth)
+      for (let i = 0; i < geometry.vertices.length; i++) {
+        expect(geometry.vertices[i].x).toBeCloseTo(flat.vertices[i].x, 6)
+        expect(geometry.vertices[i].y).toBeCloseTo(flat.vertices[i].y, 6)
+      }
+    }
+  })
+
+  it('areaM2 is the true on-slope surface area: plan-view area divided by cos(tiltDeg)', () => {
+    // A 20m x 20m plan-view trace at 40 degrees tilt covers a larger true
+    // roof area than its plan-view (satellite-trace) footprint.
+    const flat = polygonToExtrusionGeometry(SQUARE_20M, 0)
+    const tilted = polygonToExtrusionGeometry(SQUARE_20M, 40, 180)
+    const expectedAreaM2 = flat.areaM2 / Math.cos((40 * Math.PI) / 180)
+    expect(tilted.areaM2).toBeCloseTo(expectedAreaM2, 3)
+    expect(tilted.areaM2).toBeGreaterThan(flat.areaM2)
+    expect(tilted.areaM2).toBeCloseTo(400 / Math.cos((40 * Math.PI) / 180), 1)
   })
 
   it('the surface normal is always a unit vector', () => {
@@ -75,7 +155,7 @@ describe('polygonToExtrusionGeometry', () => {
       [15, 45],
       [30, 180],
       [45, 270],
-      [90, 90],
+      [80, 90],
     ]) {
       const geometry = polygonToExtrusionGeometry(SQUARE_20M, tilt, azimuth)
       const magnitude = Math.hypot(
@@ -85,23 +165,6 @@ describe('polygonToExtrusionGeometry', () => {
       )
       expect(magnitude).toBeCloseTo(1, 9)
     }
-  })
-
-  it('tilt=90 (a vertical wall) facing south (azimuth=180): normal is horizontal, pointing south', () => {
-    const geometry = polygonToExtrusionGeometry(SQUARE_20M, 90, 180)
-    expect(geometry.normal.x).toBeCloseTo(0, 6)
-    expect(geometry.normal.y).toBeCloseTo(-1, 6)
-    expect(geometry.normal.z).toBeCloseTo(0, 6)
-
-    // For a 90-degree hinge about the centroid, the southmost point of the
-    // flat 20m square (10m south of centroid) ends up raised to z ~= 10m,
-    // and the northmost point (10m north of centroid) ends up at z ~= -10m
-    // (a hand-checkable consequence of the hinge-rotation formula: z = s *
-    // sin(tilt), where s is the point's coordinate along the south-facing
-    // slope direction, and sin(90deg) = 1).
-    const zValues = geometry.vertices.map((v) => v.z).sort((a, b) => a - b)
-    expect(zValues[0]).toBeCloseTo(-10, 1)
-    expect(zValues[zValues.length - 1]).toBeCloseTo(10, 1)
   })
 
   it('tilt=45 facing east (azimuth=90): normal points east and up in equal measure', () => {
