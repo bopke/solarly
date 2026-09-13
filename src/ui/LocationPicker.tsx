@@ -28,6 +28,16 @@ export interface LocationPickerProps {
   debounceMs?: number
   /** Free vector tile style URL. Defaults to OpenFreeMap's "liberty" style (no API key required). */
   mapStyleUrl?: string
+  /**
+   * When `true`, renders large/prominent (covering the main content area
+   * on desktop, and tall within its normal sidebar flow on narrow
+   * viewports) with the search box overlaid on the map, instead of the
+   * default compact sidebar presentation. Driven by the caller from
+   * `!hasLocation` — see docs/decisions/0012-location-picker.md and the
+   * module doc comment below for why this is a CSS-only size/position
+   * change rather than a remount. Defaults to `false` (compact).
+   */
+  isHero?: boolean
 }
 
 const DEFAULT_DEBOUNCE_MS = 350
@@ -67,11 +77,37 @@ function createPin(
   return marker
 }
 
+/**
+ * Search box + MapLibre map for picking a location, rendered in one of two
+ * visual presentations depending on `isHero`:
+ *
+ * - `isHero: false` (default, "compact") — the small sidebar presentation:
+ *   search box above a `mapContainer` height, as it's always looked.
+ * - `isHero: true` ("hero") — large and prominent: on desktop, `position:
+ *   fixed` visually relocates the map to cover the main content area
+ *   (offset by `--shell-sidebar-width` so it doesn't cover the sidebar
+ *   itself); on narrow viewports (below `SIDEBAR_BREAKPOINT_PX`, where the
+ *   sidebar is a stacked accordion rather than a side column) it instead
+ *   just grows taller in its normal document-flow position. Either way the
+ *   search box is absolutely positioned as an overlay on top of the map
+ *   rather than stacked above it. See `LocationPicker.module.css` for the
+ *   class definitions.
+ *
+ * `App.tsx` drives `isHero` from `!hasLocation` and never unmounts this
+ * component across that toggle — see the map-setup effect below and
+ * docs/decisions/0012-location-picker.md for why that matters (tearing
+ * down and recreating the MapLibre `Map` instance would lose the WebGL
+ * context and any in-progress state). Only CSS classes change; the
+ * `mapContainerRef` div stays mounted continuously, and a `ResizeObserver`
+ * on it calls `map.resize()` whenever hero/compact toggling changes its
+ * on-screen size, so the canvas keeps redrawing correctly.
+ */
 export function LocationPicker({
   onLocationChange,
   initialLocation,
   debounceMs = DEFAULT_DEBOUNCE_MS,
   mapStyleUrl = DEFAULT_MAP_STYLE_URL,
+  isHero = false,
 }: LocationPickerProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<GeocodeResult[]>([])
@@ -270,7 +306,22 @@ export function LocationPicker({
       markerRef.current = createPin(map, start.lat, start.lon, selectFromMap)
     }
 
+    // The container's on-screen size changes purely via CSS when `isHero`
+    // toggles (see the hero/compact classes below) — the map's own DOM
+    // node never unmounts, so MapLibre never re-reads the container's new
+    // dimensions on its own. A `ResizeObserver` on the container is what
+    // notices the CSS-driven resize and tells the canvas to redraw at the
+    // new size; without this, toggling hero/compact leaves the WebGL
+    // canvas stretched/cropped to whatever size it was created at. Set up
+    // once here (not keyed on `isHero`) so it keeps working for any future
+    // reason the container might resize, not just this one.
+    const resizeObserver = new ResizeObserver(() => {
+      map.resize()
+    })
+    resizeObserver.observe(container)
+
     return () => {
+      resizeObserver.disconnect()
       markerRef.current?.remove()
       markerRef.current = null
       map.remove()
@@ -286,73 +337,99 @@ export function LocationPicker({
       ? `${listboxId}-option-${activeIndex}`
       : undefined
 
-  return (
-    <div className={styles.container}>
-      <div className={styles.searchBox}>
-        <input
-          type="text"
-          className={styles.input}
-          placeholder="Search for an address or place…"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={handleInputKeyDown}
-          onBlur={closeResults}
-          aria-label="Search for a location"
-          role="combobox"
-          aria-expanded={results.length > 0}
-          aria-controls={listboxId}
-          aria-activedescendant={activeDescendantId}
-          autoComplete="off"
-        />
-        {results.length > 0 && (
-          <ul id={listboxId} className={styles.resultsList} role="listbox">
-            {results.map((result, index) => (
-              <li
-                key={`${result.lat}-${result.lon}-${index}`}
-                id={`${listboxId}-option-${index}`}
-                className={`${styles.resultItem} ${
-                  index === activeIndex ? styles.resultItemActive : ''
-                }`}
-                role="option"
-                aria-selected={index === activeIndex}
-                tabIndex={-1}
-                // onMouseDown (not onClick) fires before the input's
-                // onBlur, so clicking a result selects it rather than the
-                // blur handler clearing the list first.
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  handleSelectResult(result)
-                }}
-              >
-                {result.displayName}
-              </li>
-            ))}
-          </ul>
-        )}
-        {results.length > 0 && (
-          <p className={styles.attribution}>
-            Search results © OpenStreetMap contributors, via Nominatim
-          </p>
-        )}
-        {searchState === 'no-results' && (
-          <p className={`${styles.message} ${styles.noResults}`}>
-            No results found. You can also click the map to pick a location.
-          </p>
-        )}
-        {searchState === 'error' && (
-          <p className={`${styles.message} ${styles.error}`} role="alert">
-            {errorMessage ?? 'Search failed.'} You can also click the map to
-            pick a location.
-          </p>
-        )}
-      </div>
+  const containerClassName = isHero
+    ? `${styles.container} ${styles.containerHero}`
+    : styles.container
+  const mapWrapperClassName = isHero
+    ? `${styles.mapWrapper} ${styles.mapWrapperHero}`
+    : styles.mapWrapper
+  const searchBoxClassName = isHero
+    ? `${styles.searchBox} ${styles.searchBoxHero}`
+    : styles.searchBox
+  const mapContainerClassName = isHero
+    ? `${styles.mapContainer} ${styles.mapContainerHero}`
+    : styles.mapContainer
 
-      <div
-        ref={mapContainerRef}
-        className={styles.mapContainer}
-        data-testid="location-picker-map"
-        aria-label="Map for selecting a location"
-      />
+  return (
+    <div className={containerClassName}>
+      {/*
+       * `mapWrapper` holds both the search box and the map DOM node in
+       * both hero and compact mode — only its CSS classes (and those of
+       * its children) change between them. The map's own container div
+       * below is never removed/recreated across that toggle, which is
+       * exactly what keeps the MapLibre `Map` instance (created in the
+       * effect above) alive: see the module's map-setup effect and its
+       * `ResizeObserver`, which notices the CSS-driven size change and
+       * tells the canvas to redraw. See also
+       * docs/decisions/0012-location-picker.md.
+       */}
+      <div className={mapWrapperClassName}>
+        <div className={searchBoxClassName}>
+          <input
+            type="text"
+            className={styles.input}
+            placeholder="Search for an address or place…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={handleInputKeyDown}
+            onBlur={closeResults}
+            aria-label="Search for a location"
+            role="combobox"
+            aria-expanded={results.length > 0}
+            aria-controls={listboxId}
+            aria-activedescendant={activeDescendantId}
+            autoComplete="off"
+          />
+          {results.length > 0 && (
+            <ul id={listboxId} className={styles.resultsList} role="listbox">
+              {results.map((result, index) => (
+                <li
+                  key={`${result.lat}-${result.lon}-${index}`}
+                  id={`${listboxId}-option-${index}`}
+                  className={`${styles.resultItem} ${
+                    index === activeIndex ? styles.resultItemActive : ''
+                  }`}
+                  role="option"
+                  aria-selected={index === activeIndex}
+                  tabIndex={-1}
+                  // onMouseDown (not onClick) fires before the input's
+                  // onBlur, so clicking a result selects it rather than the
+                  // blur handler clearing the list first.
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    handleSelectResult(result)
+                  }}
+                >
+                  {result.displayName}
+                </li>
+              ))}
+            </ul>
+          )}
+          {results.length > 0 && (
+            <p className={styles.attribution}>
+              Search results © OpenStreetMap contributors, via Nominatim
+            </p>
+          )}
+          {searchState === 'no-results' && (
+            <p className={`${styles.message} ${styles.noResults}`}>
+              No results found. You can also click the map to pick a location.
+            </p>
+          )}
+          {searchState === 'error' && (
+            <p className={`${styles.message} ${styles.error}`} role="alert">
+              {errorMessage ?? 'Search failed.'} You can also click the map to
+              pick a location.
+            </p>
+          )}
+        </div>
+
+        <div
+          ref={mapContainerRef}
+          className={mapContainerClassName}
+          data-testid="location-picker-map"
+          aria-label="Map for selecting a location"
+        />
+      </div>
 
       {resolvedLocation && (
         <p className={styles.coords}>

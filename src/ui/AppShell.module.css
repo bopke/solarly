@@ -6,6 +6,8 @@
  */
 .shell {
   display: grid;
+  /* Kept in sync with --shell-sidebar-width in tokens.css by hand — see
+     that token's doc comment for why. */
   grid-template-columns: 320px 1fr;
   height: 100vh; /* fallback for browsers without dvh support */
   height: 100dvh;

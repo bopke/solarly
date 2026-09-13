@@ -188,6 +188,7 @@ function App() {
       onModeChange={setMode}
       locationSlot={
         <LocationPicker
+          isHero={location === undefined}
           onLocationChange={(loc) => {
             setLocation(loc)
             clearStaleResults()

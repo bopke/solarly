@@ -22,6 +22,17 @@
   --shell-accent-hover: #b45309;
   --shell-accent-contrast: #fffdf7;
   --shell-hover: #f5f0e6;
+  /*
+   * Width of the sidebar's desktop column (see `.shell` in
+   * AppShell.module.css, `grid-template-columns: 320px 1fr`). Exposed as a
+   * token so anything that needs to visually line up with the main content
+   * area's left edge from outside the grid (e.g. `LocationPicker`'s hero
+   * mode, which uses `position: fixed` to cover the main area without
+   * moving in the DOM tree — see LocationPicker.module.css) can read the
+   * same value instead of hardcoding it a second time. Kept in sync with
+   * AppShell.module.css by hand, same as `SIDEBAR_BREAKPOINT_PX`.
+   */
+  --shell-sidebar-width: 320px;
 }
 
 @media (prefers-color-scheme: dark) {

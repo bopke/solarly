@@ -64,6 +64,15 @@ export interface AppShellProps {
  * toggle, update button) + main chart area (tab nav + content), per
  * layout "A" in the M1 design doc.
  *
+ * `hasLocation` drives more than just `MainArea`'s empty state: as of
+ * issue #51, the caller is expected to also drive `locationSlot`'s
+ * `LocationPicker` hero/compact presentation from the same
+ * `!hasLocation` value (see `App.tsx`), so the two stay in sync — the map
+ * is large/prominent for exactly as long as `MainArea` would otherwise
+ * show its empty state. `AppShell` doesn't enforce this itself (it has no
+ * way to reach into an opaque `locationSlot` node), it just documents the
+ * expectation for callers.
+ *
  * `mode` and `activeTab` are uncontrolled by default (`AppShell` owns the
  * state, seeded from `defaultMode`), but a parent can take over either or
  * both by passing the matching controlled prop pair (`mode`+

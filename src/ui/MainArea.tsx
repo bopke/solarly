@@ -55,6 +55,18 @@ export interface MainAreaProps {
  *    per the "last successful result stays visible" requirement)
  * 4. no error, but a run is in flight → {@link LoadingSkeleton}
  * 5. otherwise → the active tab's content (or a placeholder)
+ *
+ * Case 1 above (`EmptyState`) is visually moot on desktop as of issue #51:
+ * `App.tsx` renders `LocationPicker` "hero"-sized whenever there's no
+ * location, and its desktop hero presentation is `position: fixed`,
+ * covering this exact panel (see `LocationPicker.module.css`) — so
+ * whatever `EmptyState` renders sits underneath it, hidden. It's still
+ * rendered rather than skipped because (a) on narrow viewports the hero
+ * map lives in the sidebar accordion instead, so this panel *is* visible
+ * there, and (b) it's cheap correctness insurance if the hero map is ever
+ * not covering this panel for some other reason (e.g. a future layout
+ * change). `MainArea` itself does not know or care about hero/compact —
+ * that's entirely `LocationPicker`'s and `App.tsx`'s concern.
  */
 export function MainArea({
   mode,

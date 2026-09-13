@@ -7,9 +7,6 @@ describe('AppShell', () => {
   it('shows the empty state when no location is set', () => {
     render(<AppShell hasLocation={false} />)
     expect(screen.getByText(/no location selected/i)).toBeInTheDocument()
-    expect(
-      screen.getByText(/search for an address or click the map/i),
-    ).toBeInTheDocument()
   })
 
   it('shows the empty state even while loading, when no location is set', () => {

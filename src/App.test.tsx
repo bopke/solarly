@@ -36,6 +36,7 @@ vi.mock('maplibre-gl', () => ({
       return this
     }
     flyTo() {}
+    resize() {}
     remove() {}
   },
   Marker: class {

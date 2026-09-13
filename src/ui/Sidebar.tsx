@@ -72,6 +72,16 @@ export interface SidebarProps {
  * back past the breakpoint would leave `.contentCollapsed`/`hidden`
  * applied with no visible control left to undo it, since the toggle
  * itself is `display: none` at desktop widths.
+ *
+ * `locationSlot` is expected to render large ("hero") while there's no
+ * location yet (see `LocationPicker`'s `isHero` prop, driven by
+ * `App.tsx`) — on desktop that's a `position: fixed` overlay that escapes
+ * this component's layout entirely, but on narrow viewports it instead
+ * just grows tall within its normal position inside `.content` below.
+ * `defaultExpanded` already defaults to `true`, so the accordion starts
+ * expanded on first load regardless of `hasLocation` — the hero map is
+ * visible there without any extra wiring. `Sidebar` doesn't otherwise
+ * know or care whether `locationSlot` is in hero or compact mode.
  */
 export function Sidebar({
   locationSlot,
