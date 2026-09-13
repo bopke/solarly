@@ -57,12 +57,12 @@ const { FakeMap, FakeDraw, mapInstances, drawInstances } = vi.hoisted(() => {
   }
 
   class FakeDrawClass {
-    options: unknown
+    options: { suppressAPIEvents?: boolean } & Record<string, unknown>
     features: Record<string, Feature> = {}
     map: FakeMapClass | null = null
     lastMode: string | null = null
     private nextId = 1
-    constructor(options: unknown) {
+    constructor(options: { suppressAPIEvents?: boolean }) {
       this.options = options
       drawInstances.push(this)
     }
@@ -81,9 +81,20 @@ const { FakeMap, FakeDraw, mapInstances, drawInstances } = vi.hoisted(() => {
       }
     }
     delete(id: string) {
+      // Mirrors real `@mapbox/mapbox-gl-draw`: `suppressAPIEvents`
+      // defaults to `true`, meaning a *programmatic* `draw.delete(id)`
+      // call like this one stays silent (no `draw.delete` event) unless
+      // the caller explicitly passed `suppressAPIEvents: false` — see the
+      // doc comment on `drawOptions` in SceneTracing.tsx. Only user
+      // mouse/keyboard interaction (not modeled by this test helper)
+      // fires the event unconditionally in the real library. Making this
+      // conditional (rather than always emitting, as before) is what lets
+      // a regression test actually catch a revert of that fix.
       const feature = this.features[id]
       delete this.features[id]
-      this.map?.emit('draw.delete', { features: feature ? [feature] : [] })
+      if (this.options.suppressAPIEvents === false) {
+        this.map?.emit('draw.delete', { features: feature ? [feature] : [] })
+      }
     }
     changeMode(mode: string) {
       this.lastMode = mode
@@ -129,6 +140,7 @@ vi.mock('@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css', () => ({}))
 
 // Imported after the mocks above so the mocked modules are in place.
 import { SceneTracing } from './SceneTracing'
+import { MAPBOX_SATELLITE_SOURCE_ID } from './mapboxSatellite'
 
 // A roughly 100m x 100m square near the equator — comfortably above the
 // near-zero-area validation threshold. [lon, lat] tuples, matching
@@ -207,7 +219,7 @@ describe('SceneTracing', () => {
       expect(screen.queryByRole('status')).not.toBeInTheDocument()
     })
 
-    it('falls back to the plain style with a notice when a tile request fails', () => {
+    it('falls back to the plain style with a notice when a genuine satellite-source error occurs (e.g. auth failure)', () => {
       render(
         <SceneTracing
           center={CENTER}
@@ -219,6 +231,7 @@ describe('SceneTracing', () => {
       act(() => {
         mapInstances[0].emit('error', {
           error: { status: 401, message: 'Unauthorized' },
+          sourceId: MAPBOX_SATELLITE_SOURCE_ID,
         })
       })
 
@@ -230,7 +243,7 @@ describe('SceneTracing', () => {
       )
     })
 
-    it('only falls back once, even if further tile errors occur', () => {
+    it('only falls back once, even if further satellite-source errors occur', () => {
       render(
         <SceneTracing
           center={CENTER}
@@ -240,14 +253,81 @@ describe('SceneTracing', () => {
       )
 
       act(() => {
-        mapInstances[0].emit('error', { error: { status: 401 } })
-        mapInstances[0].emit('error', { error: { status: 401 } })
+        mapInstances[0].emit('error', {
+          error: { status: 401 },
+          sourceId: MAPBOX_SATELLITE_SOURCE_ID,
+        })
+        mapInstances[0].emit('error', {
+          error: { status: 401 },
+          sourceId: MAPBOX_SATELLITE_SOURCE_ID,
+        })
       })
 
       // setStyle called at most once in practice — asserted indirectly:
       // the notice text is still the tile-error one, not duplicated or
       // reverted.
       expect(screen.getAllByRole('status')).toHaveLength(1)
+    })
+
+    // Regression coverage for the bug found in code review: mapbox-gl-draw's
+    // bundled default layer styles (e.g. gl-draw-lines's line-dasharray)
+    // fail MapLibre's stricter style-spec validation and fire `error`
+    // severity map `error` events unrelated to satellite tile/auth
+    // failures. Those events carry no sourceId (or a sourceId belonging to
+    // some other layer/source) and must NOT trigger the satellite ->
+    // plain-style fallback, or a valid API key's imagery would be
+    // discarded every time draw's own layers are added.
+    it('does NOT fall back when the map error is unrelated draw-layer style-validation noise (no matching sourceId)', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="valid-token"
+        />,
+      )
+
+      act(() => {
+        mapInstances[0].emit('error', {
+          error: {
+            message:
+              'layers.gl-draw-lines.cold.paint.line-dasharray[2][0]: Expression name must be a string, but found number instead.',
+          },
+          // No sourceId at all — this is exactly how mapbox-gl-draw's
+          // style-validation errors surface in real MapLibre (fired
+          // directly on the style/map, not bubbled from a source).
+        })
+      })
+
+      const style = mapInstances[0].style as {
+        sources: Record<string, { tiles: string[] }>
+      }
+      expect(style.sources[MAPBOX_SATELLITE_SOURCE_ID]).toBeDefined()
+      expect(mapInstances[0].style).not.toBe(
+        'https://tiles.openfreemap.org/styles/liberty',
+      )
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
+
+    it('does NOT fall back when the map error names an unrelated sourceId', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="valid-token"
+        />,
+      )
+
+      act(() => {
+        mapInstances[0].emit('error', {
+          error: { message: 'some other source error' },
+          sourceId: 'some-other-source',
+        })
+      })
+
+      expect(mapInstances[0].style).not.toBe(
+        'https://tiles.openfreemap.org/styles/liberty',
+      )
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
     })
   })
 
@@ -266,9 +346,10 @@ describe('SceneTracing', () => {
         drawInstances[0].simulateCreate(VALID_SQUARE)
       })
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ kind: 'roof-face' }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ kind: 'roof-face' })],
+        false,
+      )
     })
 
     it('tags a newly drawn shape as ground-array after toggling "Next shape"', () => {
@@ -287,9 +368,10 @@ describe('SceneTracing', () => {
         drawInstances[0].simulateCreate(VALID_SQUARE)
       })
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ kind: 'ground-array' }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ kind: 'ground-array' })],
+        false,
+      )
     })
 
     it('lets an existing shape be re-tagged after the fact', () => {
@@ -312,9 +394,10 @@ describe('SceneTracing', () => {
         target: { value: 'ground-array' },
       })
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id, kind: 'ground-array' }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ id, kind: 'ground-array' })],
+        false,
+      )
       expect(drawInstances[0].get(id)?.properties?.kind).toBe('ground-array')
     })
 
@@ -349,13 +432,16 @@ describe('SceneTracing', () => {
         id = drawInstances[0].simulateCreate(VALID_SQUARE)
       })
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        {
-          id,
-          kind: 'roof-face',
-          polygon: VALID_SQUARE.map(([lon, lat]) => ({ lat, lon })),
-        },
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [
+          {
+            id,
+            kind: 'roof-face',
+            polygon: VALID_SQUARE.map(([lon, lat]) => ({ lat, lon })),
+          },
+        ],
+        false,
+      )
     })
 
     it('fires onShapesChange with the updated polygon on edit', () => {
@@ -383,13 +469,16 @@ describe('SceneTracing', () => {
         drawInstances[0].simulateUpdate(id, movedSquare)
       })
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        {
-          id,
-          kind: 'roof-face',
-          polygon: movedSquare.map(([lon, lat]) => ({ lat, lon })),
-        },
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [
+          {
+            id,
+            kind: 'roof-face',
+            polygon: movedSquare.map(([lon, lat]) => ({ lat, lon })),
+          },
+        ],
+        false,
+      )
     })
 
     it('fires onShapesChange without the shape after delete', () => {
@@ -406,15 +495,40 @@ describe('SceneTracing', () => {
       act(() => {
         id = drawInstances[0].simulateCreate(VALID_SQUARE)
       })
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ id })],
+        false,
+      )
 
       const item = screen.getByTestId(`shape-${id}`)
       fireEvent.click(within(item).getByRole('button', { name: /delete/i }))
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([])
+      expect(onShapesChange).toHaveBeenLastCalledWith([], false)
       expect(screen.queryByTestId(`shape-${id}`)).not.toBeInTheDocument()
+    })
+
+    // Regression coverage: `MapboxDraw` must be constructed with
+    // `suppressAPIEvents: false` so `handleDeleteShape`'s programmatic
+    // `draw.delete(id)` call actually fires `draw.delete` (mapbox-gl-draw
+    // defaults `suppressAPIEvents` to `true`, which silences exactly this
+    // kind of programmatic call). `FakeDrawClass.delete` above only emits
+    // when this option is explicitly `false` — matching the real
+    // library's default-suppresses behavior — so this test (and the one
+    // above, which depends on the delete event reaching React state) would
+    // fail if `suppressAPIEvents: false` were ever reverted, unlike an
+    // assertion that only checks `onShapesChange` output.
+    it('constructs MapboxDraw with suppressAPIEvents: false so programmatic delete reaches React state', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="token"
+        />,
+      )
+
+      expect(drawInstances[0].options).toMatchObject({
+        suppressAPIEvents: false,
+      })
     })
 
     it('deleting one shape does not affect other traced shapes', () => {
@@ -446,9 +560,10 @@ describe('SceneTracing', () => {
 
       expect(screen.queryByTestId(`shape-${firstId}`)).not.toBeInTheDocument()
       expect(screen.getByTestId(`shape-${secondId}`)).toBeInTheDocument()
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id: secondId }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ id: secondId })],
+        false,
+      )
     })
   })
 
@@ -472,7 +587,7 @@ describe('SceneTracing', () => {
       expect(within(item).getByRole('alert')).toHaveTextContent(
         /cross themselves/i,
       )
-      expect(onShapesChange).toHaveBeenLastCalledWith([])
+      expect(onShapesChange).toHaveBeenLastCalledWith([], true)
       // The invalid shape stays visible/editable rather than being removed.
       expect(screen.getByTestId(`shape-${id}`)).toBeInTheDocument()
     })
@@ -494,7 +609,7 @@ describe('SceneTracing', () => {
 
       const item = screen.getByTestId(`shape-${id}`)
       expect(within(item).getByRole('alert')).toHaveTextContent(/too small/i)
-      expect(onShapesChange).toHaveBeenLastCalledWith([])
+      expect(onShapesChange).toHaveBeenLastCalledWith([], true)
     })
 
     it('an invalid shape does not affect an already-valid shape in the output', () => {
@@ -515,9 +630,42 @@ describe('SceneTracing', () => {
         drawInstances[0].simulateCreate(BOWTIE)
       })
 
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id: validId }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ id: validId })],
+        true,
+      )
+    })
+
+    it('signals hasInvalidShapes so callers can distinguish "nothing drawn" from "everything invalid"', () => {
+      const onShapesChange = vi.fn()
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={onShapesChange}
+          mapboxApiKey="token"
+        />,
+      )
+
+      // Nothing drawn yet: empty shapes, not flagged as invalid.
+      expect(onShapesChange).toHaveBeenLastCalledWith([], false)
+
+      let id = ''
+      act(() => {
+        id = drawInstances[0].simulateCreate(BOWTIE)
+      })
+
+      // Drawn, but invalid: still an empty valid-shapes array, but now
+      // flagged so a caller can block proceeding.
+      expect(onShapesChange).toHaveBeenLastCalledWith([], true)
+
+      act(() => {
+        drawInstances[0].simulateUpdate(id, VALID_SQUARE)
+      })
+
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ id })],
+        false,
+      )
     })
 
     it('fixing an invalid polygon by editing it clears the error and includes it in the output', () => {
@@ -544,9 +692,10 @@ describe('SceneTracing', () => {
       expect(
         within(screen.getByTestId(`shape-${id}`)).queryByRole('alert'),
       ).not.toBeInTheDocument()
-      expect(onShapesChange).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id }),
-      ])
+      expect(onShapesChange).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ id })],
+        false,
+      )
     })
   })
 
@@ -586,7 +735,7 @@ describe('SceneTracing', () => {
       }).not.toThrow()
 
       expect(screen.getByText(/no shapes traced yet/i)).toBeInTheDocument()
-      expect(onShapesChange).toHaveBeenLastCalledWith([])
+      expect(onShapesChange).toHaveBeenLastCalledWith([], false)
     })
 
     it('ignores a draw.update whose ring contains a null (in-progress) vertex', () => {
@@ -631,7 +780,7 @@ describe('SceneTracing', () => {
       expect(within(item).getByRole('alert')).toHaveTextContent(
         /at least 3 points/i,
       )
-      expect(onShapesChange).toHaveBeenLastCalledWith([])
+      expect(onShapesChange).toHaveBeenLastCalledWith([], true)
     })
   })
 })

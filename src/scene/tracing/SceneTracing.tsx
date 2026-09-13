@@ -9,9 +9,11 @@ import type { LatLon } from './geometry'
 import {
   buildMapboxSatelliteStyle,
   FALLBACK_STYLE_URL,
+  MAPBOX_SATELLITE_SOURCE_ID,
   readMapboxApiKey,
 } from './mapboxSatellite'
 import type { TracedShape, TracedShapeKind } from './types'
+import { DRAW_STYLES } from './drawStyles'
 import styles from './SceneTracing.module.css'
 
 export interface SceneTracingProps {
@@ -24,8 +26,16 @@ export interface SceneTracingProps {
    * callback until fixed or deleted — see the module doc comment below —
    * but stay visible/editable in the UI so fixing one shape never loses
    * the others.
+   *
+   * `hasInvalidShapes` distinguishes "the user hasn't drawn anything yet"
+   * (`shapes: []`, `hasInvalidShapes: false`) from "everything drawn so
+   * far is invalid" (`shapes: []`, `hasInvalidShapes: true`) — the M2
+   * spec requires the latter to block proceeding to the next step, which
+   * an empty `shapes` array alone can't signal. `true` whenever at least
+   * one currently-drawn shape has an unresolved validation error,
+   * regardless of how many valid shapes also exist.
    */
-  onShapesChange: (shapes: TracedShape[]) => void
+  onShapesChange: (shapes: TracedShape[], hasInvalidShapes: boolean) => void
   /** Initial zoom, centered on `center`. Defaults to building-level (19). */
   initialZoom?: number
   /**
@@ -85,6 +95,32 @@ interface MapWithDrawEvents {
     type: K,
     listener: (event: DrawEventMap[K]) => void,
   ): void
+}
+
+/**
+ * The shape of a MapLibre `error` event actually needed here. MapLibre's
+ * own `ErrorEvent` type only declares `error: ErrorLike` — but at runtime,
+ * when an error originates from (or bubbles up through) a source, the
+ * event also carries a `sourceId` (see `setEventedParent`'s data-merging
+ * in maplibre-gl's `Source`/`Style` internals), which isn't reflected in
+ * the published types. This is the only field `handleMapError` needs to
+ * tell a genuine satellite-source failure apart from unrelated `error`
+ * events (see its doc comment).
+ */
+interface MapErrorEventLike {
+  error?: { message?: string }
+  sourceId?: string
+}
+
+/**
+ * `map.on('error', ...)`'s published type only knows about `ErrorEvent`'s
+ * typed fields, not the extra `sourceId` MapLibre merges onto it at
+ * runtime (see `MapErrorEventLike` above) — this narrow escape hatch
+ * mirrors `MapWithDrawEvents` just above for the same reason.
+ */
+interface MapWithTypedErrorEvent {
+  on(type: 'error', listener: (event: MapErrorEventLike) => void): void
+  off(type: 'error', listener: (event: MapErrorEventLike) => void): void
 }
 
 /**
@@ -174,7 +210,8 @@ export function SceneTracing({
 
   useEffect(() => {
     const valid = shapes.filter((shape) => !validationErrors[shape.id])
-    onShapesChangeRef.current(valid)
+    const hasInvalidShapes = shapes.some((shape) => validationErrors[shape.id])
+    onShapesChangeRef.current(valid, hasInvalidShapes)
   }, [shapes, validationErrors])
 
   // --- Map + draw setup ---------------------------------------------------
@@ -198,18 +235,31 @@ export function SceneTracing({
     map.addControl(new NavigationControl(), 'top-right')
     mapRef.current = map
 
-    // Any tile-load failure while the satellite style is active is
-    // attributed to the satellite source, since it's the map's only
-    // source in that style. Falls back once, not in a retry loop.
+    // MapLibre's `error` event fires for far more than tile/auth
+    // failures — notably, `@mapbox/mapbox-gl-draw`'s bundled layer styles
+    // (e.g. `gl-draw-lines`'s `line-dasharray`) fail MapLibre's stricter
+    // style-spec validation and emit `error`-severity (not warning) map
+    // `error` events the moment `map.addControl(draw)` adds its layers —
+    // completely unrelated to whether satellite tiles loaded. Those
+    // validation errors are fired directly on the map/style and carry no
+    // `sourceId`. Only an error that actually traces back to the
+    // satellite source (auth failure, tile fetch failure, source not
+    // found) carries `sourceId === MAPBOX_SATELLITE_SOURCE_ID` — that's
+    // the only case that should trigger the fallback. Anything else is
+    // ignored here (left for MapLibre's own console warning/error
+    // logging), so a valid API key's satellite imagery isn't discarded
+    // because of unrelated draw-layer noise.
     let fellBack = !usingSatellite
-    function handleMapError() {
+    function handleMapError(event: MapErrorEventLike) {
       if (fellBack) return
+      if (event.sourceId !== MAPBOX_SATELLITE_SOURCE_ID) return
       fellBack = true
       map.setStyle(FALLBACK_STYLE_URL)
       setSatelliteNotice(TILE_ERROR_NOTICE)
     }
+    const mapWithTypedError = map as unknown as MapWithTypedErrorEvent
     if (usingSatellite) {
-      map.on('error', handleMapError)
+      mapWithTypedError.on('error', handleMapError)
     }
 
     // `suppressAPIEvents` isn't in `@mapbox/mapbox-gl-draw`'s published
@@ -228,6 +278,16 @@ export function SceneTracing({
       displayControlsDefault: false,
       controls: {},
       suppressAPIEvents: false,
+      // `DRAW_STYLES` is a copy of mapbox-gl-draw's own default theme
+      // with one fix: `gl-draw-lines`'s `line-dasharray` paint value
+      // wrapped in `['literal', ...]`. The bundled default theme's bare
+      // numeric array fails MapLibre's stricter style-spec validation,
+      // which makes `map.addLayer` silently skip adding that layer
+      // entirely — so polygon edge outlines and the in-progress
+      // rubber-band line while drawing never rendered (fills and vertex
+      // handles did, since their layers don't use `line-dasharray`). See
+      // `drawStyles.ts`'s doc comment for the full story.
+      styles: DRAW_STYLES,
     }
     const draw = new MapboxDraw(drawOptions)
     drawRef.current = draw
@@ -297,7 +357,7 @@ export function SceneTracing({
     drawEvents.on('draw.delete', handleDelete)
 
     return () => {
-      map.off('error', handleMapError)
+      mapWithTypedError.off('error', handleMapError)
       drawEvents.off('draw.create', handleCreate)
       drawEvents.off('draw.update', handleUpdate)
       drawEvents.off('draw.delete', handleDelete)

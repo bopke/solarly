@@ -9,6 +9,12 @@
  * helpers, this file is a reasonable candidate to consolidate into it.
  */
 
+// TODO(#66): `LatLon` is also declared in #55's `scene/derive/geo.ts` once
+// that lands. Structural typing makes the two interchangeable today, but
+// having two declarations of the module tree's core coordinate type is
+// worth consolidating — likely into a shared `src/scene/types.ts` — once
+// #55 is on `main` and the shape of `derive/`'s version is settled. See
+// issue #66.
 /** A single vertex of a traced polygon, in WGS84 degrees. */
 export interface LatLon {
   lat: number
