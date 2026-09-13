@@ -30,6 +30,7 @@ import {
   intersectGroundPlane,
   isInsideAnyFootprint,
 } from './obstructionPlacement'
+import { computeSunLightState, dayHourToUtcDate } from './sunDirection'
 import styles from './Scene3DView.module.css'
 
 /**
@@ -106,6 +107,19 @@ export interface Scene3DViewProps {
   defaultObstructions?: Obstruction[]
   /** Called with the full next obstruction list on every add/edit/delete. Required to react to changes when `obstructions` is controlled; optional (but still called) in the uncontrolled case. */
   onObstructionsChange?: (obstructions: Obstruction[]) => void
+  /**
+   * The scene's real-world location, used by the sun-position scrubber
+   * (issue #76) to compute the sun's altitude/azimuth for the chosen
+   * day/time via `solar-physics/sunPosition`. Structurally identical to
+   * `scene/flow`'s `SceneFlowLocation` (this module stays self-contained
+   * rather than importing it, matching the rest of `src/scene/`'s
+   * convention — see that type's own doc comment). Falls back to the
+   * first shape's `geometry.origin` (the same point used as this
+   * component's own scene-local coordinate origin, `sceneOrigin`) when
+   * omitted, so the scrubber still works for standalone/demo usage
+   * without a caller having to pass the same lat/lon twice.
+   */
+  location?: { lat: number; lon: number }
 }
 
 const PLANE_COLOR = '#93a3b8'
@@ -164,11 +178,13 @@ function ShapeMesh({
       <mesh
         geometry={planeGeometry}
         onClick={(event: ThreeEvent<MouseEvent>) => event.stopPropagation()}
+        castShadow
+        receiveShadow
       >
         <meshStandardMaterial color={PLANE_COLOR} side={THREE.DoubleSide} />
       </mesh>
       {panelsGeometry && (
-        <mesh geometry={panelsGeometry}>
+        <mesh geometry={panelsGeometry} castShadow receiveShadow>
           <meshStandardMaterial color={PANEL_COLOR} />
         </mesh>
       )}
@@ -258,6 +274,7 @@ export function Scene3DView({
   obstructions: controlledObstructions,
   defaultObstructions,
   onObstructionsChange,
+  location,
 }: Scene3DViewProps) {
   const isControlled = controlledObstructions !== undefined
   const [internalObstructions, setInternalObstructions] = useState<
@@ -347,6 +364,40 @@ export function Scene3DView({
     [firstShapeOrigin],
   )
 
+  // Sun-position scrubber (issue #76): day-of-year (1-365) + hour-of-day
+  // (0-23.99..., UTC — see `dayHourToUtcDate`'s doc for why no real
+  // timezone lookup is involved) rather than a single datetime picker, so
+  // "time of year" and "time of day" can each be scrubbed independently
+  // with a plain `<input type="range">` (no date-parsing/timezone-display
+  // edge cases, and it mirrors this project's general preference for
+  // simple explicit controls over richer widgets — see `Scene3DView`'s own
+  // doc comment on why obstruction placement is click + numeric field
+  // rather than drag). Defaults to a fixed summer midday (day 172 ~=
+  // June 21, noon UTC) rather than "now": a deterministic default keeps
+  // the initial render's lighting predictable (and near-guaranteed above
+  // the horizon) for both first-time users and this component's own
+  // tests, matching the reasonably bright fixed light the static
+  // `directionalLight` gave before this scrubber replaced it.
+  const [dayOfYear, setDayOfYear] = useState(172)
+  const [hourOfDay, setHourOfDay] = useState(12)
+
+  const scrubberDate = useMemo(
+    () => dayHourToUtcDate(dayOfYear, hourOfDay),
+    [dayOfYear, hourOfDay],
+  )
+
+  // The scrubber needs the scene's real-world lat/lon to compute a sun
+  // position at all; `location` is optional (this component is also used
+  // standalone/in demos — see its own doc comment), so it falls back to
+  // `sceneOrigin`, which is already the first shape's real lat/lon (or
+  // `{ lat: 0, lon: 0 }` with no shapes, which just renders a plausible
+  // sun path at the equator/prime-meridian rather than crashing).
+  const sunLocation = location ?? sceneOrigin
+  const sunLight = useMemo(
+    () => computeSunLightState(sunLocation.lat, sunLocation.lon, scrubberDate),
+    [sunLocation, scrubberDate],
+  )
+
   // Plan-view footprint of every shape, in the same scene-local frame a
   // ground click resolves to — used by `handleGroundClick` to reject
   // placement under a shape regardless of its tilt or the current camera
@@ -399,7 +450,15 @@ export function Scene3DView({
     return mergeBounds(shapes.map((s) => shapeBounds(s, sceneOrigin)))
   }, [shapes, sceneOrigin])
 
-  const { cameraPosition, target, gizmoPosition, gridSize } = useMemo(() => {
+  const {
+    cameraPosition,
+    target,
+    gizmoPosition,
+    gridSize,
+    sceneCenter,
+    sunLightDistance,
+    shadowFrustumHalfSize,
+  } = useMemo(() => {
     const spanX = bounds.max.x - bounds.min.x
     const spanY = bounds.max.y - bounds.min.y
     const centerX = (bounds.min.x + bounds.max.x) / 2
@@ -420,8 +479,35 @@ export function Scene3DView({
         0,
       ] as [number, number, number],
       gridSize: Math.ceil(span * 1.6),
+      sceneCenter: { x: centerX, y: centerY, z: centerZ },
+      // How far out along the sun direction to place the `DirectionalLight`
+      // — far enough that it behaves like a true parallel-ray directional
+      // source relative to the scene's own size, matching the existing
+      // camera `distance`'s "scale to the scene span" approach above.
+      sunLightDistance: Math.max(span * 3, 20),
+      // Half-width/height of the shadow camera's orthographic frustum,
+      // sized to comfortably cover the scene's footprint (including
+      // obstructions placed somewhat outside a shape's own bounds) rather
+      // than clipping shadows at grazing sun angles.
+      shadowFrustumHalfSize: Math.max(span * 0.9, 6),
     }
   }, [bounds])
+
+  // Sun `DirectionalLight` position: the scene center offset out along the
+  // scrubber-computed sun direction by `sunLightDistance`, so the light
+  // "shines from the sun's direction" toward the scene the same way a real
+  // directional light source at effectively infinite distance would.
+  // `null` while the sun is below the horizon (`sunLight.direction` is
+  // `null`) — see the "night handling" doc comment below on the light's
+  // conditional render for what that means visually.
+  const sunLightPosition = useMemo<[number, number, number] | null>(() => {
+    if (!sunLight.direction) return null
+    return [
+      sceneCenter.x + sunLight.direction.x * sunLightDistance,
+      sceneCenter.y + sunLight.direction.y * sunLightDistance,
+      sceneCenter.z + sunLight.direction.z * sunLightDistance,
+    ]
+  }, [sunLight.direction, sceneCenter, sunLightDistance])
 
   return (
     <div className={[styles.viewport, className].filter(Boolean).join(' ')}>
@@ -457,6 +543,58 @@ export function Scene3DView({
           </span>
         )}
       </div>
+      {/*
+        Sun-position scrubber (issue #76): day-of-year + hour-of-day
+        sliders driving the `DirectionalLight` below. Two independent
+        `<input type="range">` controls rather than a single datetime
+        picker — see the `dayOfYear`/`hourOfDay` state doc comment above
+        for why. Positioned as its own overlay panel (mirroring
+        `.obstructionToolbar`'s placement pattern) so it doesn't compete
+        with the obstruction toolbar's controls.
+      */}
+      <div className={styles.sunScrubber}>
+        <div className={styles.sunScrubberRow}>
+          <label htmlFor="sun-scrubber-day" className={styles.sunScrubberLabel}>
+            Day of year
+          </label>
+          <input
+            id="sun-scrubber-day"
+            type="range"
+            min={1}
+            max={365}
+            step={1}
+            value={dayOfYear}
+            onChange={(event) => setDayOfYear(Number(event.target.value))}
+          />
+          <span className={styles.sunScrubberValue}>{dayOfYear}</span>
+        </div>
+        <div className={styles.sunScrubberRow}>
+          <label
+            htmlFor="sun-scrubber-hour"
+            className={styles.sunScrubberLabel}
+          >
+            Time of day (UTC)
+          </label>
+          <input
+            id="sun-scrubber-hour"
+            type="range"
+            min={0}
+            max={23.75}
+            step={0.25}
+            value={hourOfDay}
+            onChange={(event) => setHourOfDay(Number(event.target.value))}
+          />
+          <span className={styles.sunScrubberValue}>
+            {String(Math.floor(hourOfDay)).padStart(2, '0')}:
+            {String(Math.round((hourOfDay % 1) * 60)).padStart(2, '0')}
+          </span>
+        </div>
+        <span className={styles.sunScrubberStatus} role="status">
+          {sunLight.direction
+            ? `Sun altitude ${sunLight.altitudeDeg.toFixed(1)}°, azimuth ${sunLight.azimuthDeg.toFixed(0)}°`
+            : 'Sun below horizon — no shadows rendered'}
+        </span>
+      </div>
       {selectedObstruction && (
         <ObstructionPropertyPanel
           obstruction={selectedObstruction}
@@ -488,10 +626,57 @@ export function Scene3DView({
       */}
       <Canvas
         frameloop="demand"
+        // Explicit `PCFShadowMap` rather than the bare `shadows` boolean
+        // shorthand: R3F's default for that shorthand is
+        // `THREE.PCFSoftShadowMap`, which this project's pinned Three.js
+        // version has removed (it now warns and silently falls back to
+        // `PCFShadowMap` anyway) — spelling it out avoids the console
+        // warning on every render without changing the actual shadow
+        // quality used.
+        shadows={{ type: THREE.PCFShadowMap }}
         camera={{ position: cameraPosition, fov: 45, up: [0, 0, 1] }}
       >
         <ambientLight intensity={0.7} />
-        <directionalLight position={[20, -10, 30]} intensity={0.9} />
+        {/*
+          Sun `DirectionalLight` (issue #76), replacing the previous fixed
+          `directionalLight position={[20, -10, 30]}`: position/target are
+          now driven by the scrubber's computed `sunLightPosition` (the
+          scene center offset out along the sun's ENU direction — see that
+          memo's doc comment) instead of a constant.
+
+          ## Night handling (sun below the horizon)
+
+          `sunLightPosition` (and `sunLight.direction`) is `null` whenever
+          `sunLight.altitudeDeg <= 0` — see `computeSunLightState`'s doc
+          comment. Rather than still rendering a `DirectionalLight`
+          positioned below the ground plane (which would either cast
+          physically-nonsensical upward shadows or require an arbitrary
+          clamp of the position itself), the light is omitted from the
+          scene entirely in that case: `ambientLight` alone keeps the scene
+          dimly but evenly visible (no shadows, no crash), and the status
+          line above the scrubber tells the user why shadows disappeared
+          rather than leaving it looking like a bug. This is a deliberate
+          judgment call for this real-time *preview* light — it has no
+          bearing on the separate analytical occlusion computation
+          (issue #74/#77), which handles night by simply producing zero
+          irradiance for that hour, independent of this component.
+        */}
+        {sunLightPosition && (
+          <directionalLight
+            castShadow
+            position={sunLightPosition}
+            target-position={[sceneCenter.x, sceneCenter.y, sceneCenter.z]}
+            intensity={1.2}
+            shadow-mapSize={[2048, 2048]}
+            shadow-camera-left={-shadowFrustumHalfSize}
+            shadow-camera-right={shadowFrustumHalfSize}
+            shadow-camera-top={shadowFrustumHalfSize}
+            shadow-camera-bottom={-shadowFrustumHalfSize}
+            shadow-camera-near={0.5}
+            shadow-camera-far={sunLightDistance * 2.5}
+            shadow-bias={-0.0005}
+          />
+        )}
         <OrbitControls makeDefault target={target} />
         <NorthArrowGizmo
           position={gizmoPosition}
@@ -516,6 +701,23 @@ export function Scene3DView({
         >
           <planeGeometry args={[gridSize * 2, gridSize * 2]} />
           <meshBasicMaterial visible={false} />
+        </mesh>
+        {/*
+          Separate, visible ground-shadow mesh (issue #76): the
+          click-handling `ground-plane` mesh above is invisible
+          (`meshBasicMaterial visible={false}`), and Three.js skips a
+          non-visible object during the normal render pass entirely — so
+          it can never actually display a received shadow, regardless of
+          `receiveShadow`. `THREE.ShadowMaterial` (`<shadowMaterial>`)
+          renders as fully transparent everywhere *except* where a shadow
+          falls on it, so this adds a shadow-only ground plane without
+          painting over the `gridHelper`/obstruction bases underneath it,
+          and without taking over ground clicks (no `onClick`, so clicks
+          pass through to the real `ground-plane` mesh behind it).
+        */}
+        <mesh name="ground-shadow" receiveShadow rotation={[0, 0, 0]}>
+          <planeGeometry args={[gridSize * 2, gridSize * 2]} />
+          <shadowMaterial opacity={0.35} />
         </mesh>
         {shapes.map((shape, index) => (
           <ShapeMesh
