@@ -14,3 +14,11 @@ export type {
   GhiDecomposition,
   SunPositionInput as DecomposeGhiSunPositionInput,
 } from './decomposeGhi'
+export {
+  isPanelOccluded,
+  rayBoxIntersection,
+  rayConeIntersection,
+  rayCylinderIntersection,
+  rayPolygonIntersection,
+} from './shadowOcclusion'
+export type { Obstacle, Vec3 } from './shadowOcclusion'
