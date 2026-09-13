@@ -486,9 +486,14 @@ export function Scene3DView({
       // camera `distance`'s "scale to the scene span" approach above.
       sunLightDistance: Math.max(span * 3, 20),
       // Half-width/height of the shadow camera's orthographic frustum,
-      // sized to comfortably cover the scene's footprint (including
-      // obstructions placed somewhat outside a shape's own bounds) rather
-      // than clipping shadows at grazing sun angles.
+      // sized to comfortably cover the scene's own footprint (including
+      // obstructions placed somewhat outside a shape's own bounds). This
+      // is a fixed size, so it can NOT prevent clipping at grazing sun
+      // angles (PR #81 review finding 2) — a 10m obstruction at a 5° sun
+      // altitude casts a shadow over 100m long, far beyond any footprint-
+      // sized frustum. Long, low-sun shadows truncating at the frustum
+      // edge is a known, accepted limitation for now rather than something
+      // this value is meant to solve.
       shadowFrustumHalfSize: Math.max(span * 0.9, 6),
     }
   }, [bounds])
@@ -508,6 +513,28 @@ export function Scene3DView({
       sceneCenter.z + sunLight.direction.z * sunLightDistance,
     ]
   }, [sunLight.direction, sceneCenter, sunLightDistance])
+
+  // The `DirectionalLight`'s `target` (PR #81 review finding 1): a
+  // `DirectionalLight` aims from its own `position` toward `target`'s
+  // *world* position, but `target` is a plain `Object3D` that Three.js
+  // never adds to the scene graph on your behalf — a JSX `target-position`
+  // shorthand only ever sets that orphaned object's *local* position, and
+  // with no parent, nothing ever recomputes its `matrixWorld`, which stays
+  // pinned at the identity (world origin) forever. That made the light's
+  // real effective aim `normalize(sunLightPosition - origin)` rather than
+  // the intended `normalize(sunLightPosition - sceneCenter)` — invisible
+  // with one shape near the origin (`sceneCenter ≈ (0,0,0)`, so the two
+  // coincide), but up to ~9.5° off once shapes are spread out. The fix:
+  // create the target `Object3D` once (`useMemo`, stable identity across
+  // renders) and render it as a genuine node in the R3F tree via
+  // `<primitive>` below (as a sibling of the light, both direct children
+  // of the `<Canvas>` scene) so R3F's own reconciler keeps it — and thus
+  // its `matrixWorld` — actually attached and updated, then hand that same
+  // object to the light via the `target` prop (not `target-position`).
+  // This also fixes the shadow camera being centered on the world origin
+  // instead of the scene (the shadow camera's `lookAt` also reads the
+  // target's, until now frozen, world position).
+  const sunTarget = useMemo(() => new THREE.Object3D(), [])
 
   return (
     <div className={[styles.viewport, className].filter(Boolean).join(' ')}>
@@ -662,20 +689,34 @@ export function Scene3DView({
           irradiance for that hour, independent of this component.
         */}
         {sunLightPosition && (
-          <directionalLight
-            castShadow
-            position={sunLightPosition}
-            target-position={[sceneCenter.x, sceneCenter.y, sceneCenter.z]}
-            intensity={1.2}
-            shadow-mapSize={[2048, 2048]}
-            shadow-camera-left={-shadowFrustumHalfSize}
-            shadow-camera-right={shadowFrustumHalfSize}
-            shadow-camera-top={shadowFrustumHalfSize}
-            shadow-camera-bottom={-shadowFrustumHalfSize}
-            shadow-camera-near={0.5}
-            shadow-camera-far={sunLightDistance * 2.5}
-            shadow-bias={-0.0005}
-          />
+          <>
+            {/*
+              The light's aim target (PR #81 review finding 1) — a real
+              node in the R3F tree (not just a prop value), so it's a
+              genuine child of the scene and its world matrix actually
+              updates when `sceneCenter` changes. See `sunTarget`'s doc
+              comment above for why this exists instead of the simpler-
+              looking `target-position` prop.
+            */}
+            <primitive
+              object={sunTarget}
+              position={[sceneCenter.x, sceneCenter.y, sceneCenter.z]}
+            />
+            <directionalLight
+              castShadow
+              position={sunLightPosition}
+              target={sunTarget}
+              intensity={1.2}
+              shadow-mapSize={[2048, 2048]}
+              shadow-camera-left={-shadowFrustumHalfSize}
+              shadow-camera-right={shadowFrustumHalfSize}
+              shadow-camera-top={shadowFrustumHalfSize}
+              shadow-camera-bottom={-shadowFrustumHalfSize}
+              shadow-camera-near={0.5}
+              shadow-camera-far={sunLightDistance * 2.5}
+              shadow-bias={-0.0005}
+            />
+          </>
         )}
         <OrbitControls makeDefault target={target} />
         <NorthArrowGizmo
@@ -715,7 +756,7 @@ export function Scene3DView({
           and without taking over ground clicks (no `onClick`, so clicks
           pass through to the real `ground-plane` mesh behind it).
         */}
-        <mesh name="ground-shadow" receiveShadow rotation={[0, 0, 0]}>
+        <mesh name="ground-shadow" receiveShadow>
           <planeGeometry args={[gridSize * 2, gridSize * 2]} />
           <shadowMaterial opacity={0.35} />
         </mesh>
