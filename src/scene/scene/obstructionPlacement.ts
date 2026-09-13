@@ -18,6 +18,7 @@
 
 import type { Vec3 } from '../derive'
 import type { Point2D } from '../derive'
+import { pointInPolygon } from '../derive'
 
 export interface Ray3 {
   origin: Vec3
@@ -52,4 +53,35 @@ export function intersectGroundPlane(ray: Ray3): Point2D | null {
     x: origin.x + t * direction.x,
     y: origin.y + t * direction.y,
   }
+}
+
+/**
+ * True when `point` falls inside any of `footprints`' plan-view polygons
+ * (point-in-polygon against each, via `scene/derive`'s `pointInPolygon`).
+ *
+ * Used to reject obstruction placement at a ground-plane point that's
+ * really underneath a traced shape (issue #58 PR #69 review). The
+ * invisible ground-plane click-catcher sits at z = 0, but
+ * `polygonToExtrusionGeometry` tilts a shape's geometry about its own
+ * centroid, so a tilted shape's surface straddles z = 0 — roughly half of
+ * a steeply-tilted roof actually sits *below* the ground plane. Because
+ * R3F dispatches pointer events nearest-hit-first, a ray aimed at that
+ * sunken half can hit the ground-plane mesh before the roof's own plane
+ * mesh (whose `onClick` is supposed to `stopPropagation` and block
+ * ground-placement), letting a click on the roof fall through and place
+ * an obstruction inside the roof's own footprint.
+ *
+ * This check is deliberately independent of that raycast-ordering/z
+ * quirk: it only looks at the *plan-view* (x, y) footprint of each shape,
+ * which is well-defined and stable regardless of tilt, viewing angle, or
+ * which mesh the raycaster happened to hit first. `footprints` must be in
+ * the same scene-local meters frame as `point` (i.e. each shape's own
+ * vertices already translated by its `offsetToSceneOrigin` offset — see
+ * `Scene3DView`'s `shapeFootprints`).
+ */
+export function isInsideAnyFootprint(
+  point: Point2D,
+  footprints: Point2D[][],
+): boolean {
+  return footprints.some((footprint) => pointInPolygon(point, footprint))
 }

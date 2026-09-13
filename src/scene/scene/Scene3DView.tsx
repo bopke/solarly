@@ -25,7 +25,10 @@ import {
   type Obstruction,
   type ObstructionKind,
 } from './obstructions'
-import { intersectGroundPlane } from './obstructionPlacement'
+import {
+  intersectGroundPlane,
+  isInsideAnyFootprint,
+} from './obstructionPlacement'
 import styles from './Scene3DView.module.css'
 
 /**
@@ -167,6 +170,26 @@ function shapeBounds(
 }
 
 /**
+ * A shape's plan-view footprint (its `ExtrusionGeometry.vertices`
+ * projected to `(x, y)`, i.e. ignoring tilt/z entirely) in the shared
+ * scene-local frame — the same frame `ShapeMesh` renders in, obtained the
+ * same way (`offsetToSceneOrigin`). Used by `isInsideAnyFootprint` to
+ * reject obstruction placement under a shape; see that function's doc for
+ * why this has to be a plan-view check rather than relying on 3D raycast
+ * ordering.
+ */
+function shapeFootprint(
+  shape: Scene3DShape,
+  sceneOrigin: { lat: number; lon: number },
+): Point2D[] {
+  const offset = offsetToSceneOrigin(shape.geometry.origin, sceneOrigin)
+  return shape.geometry.vertices.map((v) => ({
+    x: v.x + offset.x,
+    y: v.y + offset.y,
+  }))
+}
+
+/**
  * A React Three Fiber 3D view of one or more configured shapes, each an
  * auto-filled panel grid on a tilted plane, per issue #57 / the M2 design
  * spec's "3D scene" step, plus (issue #58) placed tree/building
@@ -217,6 +240,11 @@ export function Scene3DView({
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingKind, setPendingKind] = useState<ObstructionKind>('tree')
+  // Brief inline cue shown when a ground click resolves to a point inside
+  // a shape's own footprint (issue #58 PR #69 review) — placement is
+  // silently rejected in that case, but the cue tells the user why
+  // nothing happened rather than leaving the click feeling ignored.
+  const [placementBlocked, setPlacementBlocked] = useState(false)
 
   function commitObstructions(next: Obstruction[]) {
     if (!isControlled) setInternalObstructions(next)
@@ -224,6 +252,15 @@ export function Scene3DView({
   }
 
   function handlePlace(point: Point2D) {
+    if (isInsideAnyFootprint(point, shapeFootprints)) {
+      // Ground-plane point is really underneath a traced shape's
+      // footprint (e.g. the downslope half of a tilted roof, which
+      // straddles z = 0 — see `isInsideAnyFootprint`'s doc). Reject the
+      // placement rather than dropping an obstruction inside the shape.
+      setPlacementBlocked(true)
+      return
+    }
+    setPlacementBlocked(false)
     const obstruction = createObstruction(pendingKind, point)
     commitObstructions([...obstructions, obstruction])
     setSelectedId(obstruction.id)
@@ -279,6 +316,16 @@ export function Scene3DView({
   const sceneOrigin = useMemo(
     () => firstShapeOrigin ?? { lat: 0, lon: 0 },
     [firstShapeOrigin],
+  )
+
+  // Plan-view footprint of every shape, in the same scene-local frame a
+  // ground click resolves to — used by `handleGroundClick` to reject
+  // placement under a shape regardless of its tilt or the current camera
+  // angle. See `isInsideAnyFootprint`'s doc for why this can't rely on
+  // 3D raycast ordering / `stopPropagation` alone.
+  const shapeFootprints = useMemo(
+    () => shapes.map((shape) => shapeFootprint(shape, sceneOrigin)),
+    [shapes, sceneOrigin],
   )
 
   const bounds = useMemo(() => {
@@ -340,6 +387,11 @@ export function Scene3DView({
         >
           Building
         </button>
+        {placementBlocked && (
+          <span role="status" className={styles.obstructionToolbarWarning}>
+            Can&rsquo;t place an obstruction inside a traced shape.
+          </span>
+        )}
       </div>
       {selectedObstruction && (
         <ObstructionPropertyPanel

@@ -130,13 +130,22 @@ describe('Scene3DView obstructions', () => {
       geometry: polygonToExtrusionGeometry(flatSquare(0, 0), 20, 180),
     },
   ]
+  // `flatSquare(0, 0)`'s default 0.0005deg size, centered on its own
+  // centroid by `polygonToExtrusionGeometry`, resolves to a plan-view
+  // footprint of roughly x: [-17, 17], y: [-28, 28] in scene-local
+  // meters (see `obstructionPlacement.test.ts`'s footprint-blocking
+  // tests for the same shape/tilt). Ground clicks in these tests use
+  // points well outside that footprint so they aren't blocked by the
+  // #69-review footprint-containment check — clicks *inside* it are
+  // covered separately below.
+  const OUTSIDE_FOOTPRINT = { x: 60, y: 60 }
 
   it('places a tree (the default kind) on a ground click and shows its property panel', () => {
     const { container } = render(<Scene3DView shapes={shapes} />)
     const ground = container.querySelector('mesh[name="ground-plane"]')
     expect(ground).not.toBeNull()
 
-    clickGround(ground as Element, 3, 4)
+    clickGround(ground as Element, OUTSIDE_FOOTPRINT.x, OUTSIDE_FOOTPRINT.y)
 
     expect(screen.getByTestId('obstruction-property-panel')).toBeInTheDocument()
     expect(screen.getByText('tree')).toBeInTheDocument()
@@ -149,7 +158,7 @@ describe('Scene3DView obstructions', () => {
     fireEvent.click(screen.getByText('Building'))
     const ground = container.querySelector('mesh[name="ground-plane"]')
 
-    clickGround(ground as Element, 1, 1)
+    clickGround(ground as Element, OUTSIDE_FOOTPRINT.x, OUTSIDE_FOOTPRINT.y)
 
     expect(screen.getByText('building')).toBeInTheDocument()
     expect(screen.getByLabelText(/height/i)).toHaveValue(6)
@@ -166,21 +175,21 @@ describe('Scene3DView obstructions', () => {
     )
     const ground = container.querySelector('mesh[name="ground-plane"]')
 
-    clickGround(ground as Element, 5, -2)
+    clickGround(ground as Element, OUTSIDE_FOOTPRINT.x, OUTSIDE_FOOTPRINT.y)
 
     expect(onObstructionsChange).toHaveBeenCalledTimes(1)
     const [next] = onObstructionsChange.mock.calls[0]
     expect(next).toHaveLength(1)
     expect(next[0]).toMatchObject({
       kind: 'tree',
-      position: { x: 5, y: -2 },
+      position: OUTSIDE_FOOTPRINT,
     })
   })
 
   it('edits height via the property panel and deletes via the Remove button', () => {
     const { container } = render(<Scene3DView shapes={shapes} />)
     const ground = container.querySelector('mesh[name="ground-plane"]')
-    clickGround(ground as Element, 0, 0)
+    clickGround(ground as Element, OUTSIDE_FOOTPRINT.x, OUTSIDE_FOOTPRINT.y)
 
     const heightInput = screen.getByLabelText(/height/i)
     fireEvent.change(heightInput, { target: { value: '8' } })
@@ -189,6 +198,38 @@ describe('Scene3DView obstructions', () => {
     fireEvent.click(screen.getByText('Remove'))
     expect(
       screen.queryByTestId('obstruction-property-panel'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not place an obstruction under a tilted roof (downslope-half regression, #69 review)', () => {
+    // Matches the reviewer's repro shape (a tilted roof) and a ground
+    // point genuinely inside its plan-view footprint — before the fix,
+    // this is exactly the class of click that fell through the roof's
+    // `stopPropagation` guard and placed an obstruction underneath it.
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+
+    clickGround(ground as Element, 3, 4)
+
+    expect(
+      screen.queryByTestId('obstruction-property-panel'),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/can.t place an obstruction inside a traced shape/i),
+    ).toBeInTheDocument()
+  })
+
+  it('still places an obstruction on a genuinely empty ground click near (but outside) a shape', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+
+    // Just past the shape's y-extent (~28m), still well within the
+    // ground-plane mesh.
+    clickGround(ground as Element, 0, 35)
+
+    expect(screen.getByTestId('obstruction-property-panel')).toBeInTheDocument()
+    expect(
+      screen.queryByText(/can.t place an obstruction inside a traced shape/i),
     ).not.toBeInTheDocument()
   })
 

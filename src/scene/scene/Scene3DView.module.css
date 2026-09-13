@@ -40,3 +40,8 @@
   background: var(--shell-accent, #d97706);
   color: var(--shell-accent-contrast, #fffdf7);
 }
+
+.obstructionToolbarWarning {
+  color: var(--shell-danger, #b91c1c);
+  font-size: 12px;
+}
