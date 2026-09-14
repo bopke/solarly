@@ -72,11 +72,6 @@ const DEFAULT_PANEL_PRESET: PanelPreset =
   PANEL_PRESETS.find((p) => p.id === 'generic-residential-default') ??
   FALLBACK_PANEL_PRESET
 
-const DEFAULT_PANEL: PanelDimensions = {
-  widthMm: DEFAULT_PANEL_PRESET.widthMm,
-  heightMm: DEFAULT_PANEL_PRESET.heightMm,
-}
-
 /** Matches `SystemConfigForm`'s own default for the equivalent field (`DEFAULT_VALUES.systemLossesPercent`). */
 const DEFAULT_SYSTEM_LOSSES_INPUT = '14'
 
@@ -224,14 +219,28 @@ export interface SceneEditorFlowProps {
    * still shown (so the step-4 shell exists) but does nothing on click.
    */
   onApply?: (result: SceneApplyResult) => void
-  /** Panel dimensions used to auto-fill the 3D preview when a shape doesn't specify its own. Defaults to `panelPreset`'s dimensions. */
+  /**
+   * Panel dimensions used to auto-fill the 3D preview when a shape doesn't
+   * specify its own. Defaults to `panelPreset`'s own dimensions (see that
+   * prop) — pass this explicitly only to make the 3D preview's auto-fill
+   * grid use a *different* footprint than the panel model driving the
+   * wattage calc, which should be rare; the common case is to leave both
+   * this and `panelPreset` at their defaults, or set `panelPreset` alone
+   * and let this follow it, so panel *count* (physical layout, driven by
+   * this prop) and panel *wattage* (driven by `panelPreset`) always agree
+   * on which panel model is in use. See issue #88/PR #100 review Finding 1
+   * for the bug this guards against: passing `panelPreset` without also
+   * updating this field silently re-introduces a count/wattage mismatch.
+   */
   defaultPanel?: PanelDimensions
   /**
    * The panel model used to fill every derived array's `wattsPerPanel`/
    * `efficiencyPercent`/`tempCoefficientPercentPerC` on Apply (issue #61)
    * — see `DEFAULT_PANEL_PRESET`'s doc comment for why this is a single
    * preset for the whole scene rather than per-shape. Defaults to the
-   * `generic-residential-default` preset.
+   * `generic-residential-default` preset. Also implicitly drives
+   * `defaultPanel`'s default (its physical dimensions) when that prop
+   * isn't separately overridden — see `defaultPanel`'s doc comment.
    */
   panelPreset?: PanelPreset
   /** Passed through to `SceneTracing` — mainly for tests; real callers should rely on the `VITE_MAPBOX_API_KEY` env var instead. */
@@ -273,8 +282,11 @@ export function SceneEditorFlow({
   onClose,
   onStateChange,
   onApply,
-  defaultPanel = DEFAULT_PANEL,
   panelPreset = DEFAULT_PANEL_PRESET,
+  defaultPanel = {
+    widthMm: panelPreset.widthMm,
+    heightMm: panelPreset.heightMm,
+  },
   mapboxApiKey,
 }: SceneEditorFlowProps) {
   const [step, setStep] = useState<Step>(1)
@@ -317,12 +329,32 @@ export function SceneEditorFlow({
   // stored `Obstruction.position` in the *new* frame the instant the
   // anchor changes, so they stay geometrically consistent with the scene
   // regardless of why the anchor moved.
+  //
+  // `sceneAnchorOrigin([])` returns the `{ lat: 0, lon: 0 }` sentinel when
+  // there are zero traced shapes (e.g. right after deleting the last one —
+  // step 1 stays mounted for this component's whole lifetime, so this is
+  // reachable well after obstructions have already been placed). That
+  // sentinel isn't a real anchor, just a fallback value with no shape
+  // behind it — re-projecting *through* it is not a valid coordinate
+  // transform (`offsetToSceneOrigin` scales x by the destination anchor's
+  // `cos(latitude)`, so a round trip via `{0,0}` is not the identity at any
+  // other latitude — see PR #100 review Finding 2, measured at ~905 km).
+  // So this effect explicitly skips re-projecting whenever either the old
+  // or the new anchor corresponds to a zero-shapes state, leaving
+  // obstructions untouched rather than flinging them through a fake
+  // origin; they're re-projected normally once a *real* new anchor shows
+  // up (traced-shapes count goes 0 -> 1 or more).
   const prevSceneOriginRef = useRef<LatLon | null>(null)
+  const prevHadTracedShapesRef = useRef(false)
   useEffect(() => {
     const prev = prevSceneOriginRef.current
+    const prevHadTracedShapes = prevHadTracedShapesRef.current
+    const hasTracedShapes = tracedShapes.length > 0
     prevSceneOriginRef.current = sceneOrigin
+    prevHadTracedShapesRef.current = hasTracedShapes
     if (!prev) return // First render: nothing to re-project yet.
     if (prev.lat === sceneOrigin.lat && prev.lon === sceneOrigin.lon) return
+    if (!prevHadTracedShapes || !hasTracedShapes) return // {0,0} sentinel on either end: not a real anchor to project from/to.
 
     const delta = offsetToSceneOrigin(prev, sceneOrigin)
     if (delta.x === 0 && delta.y === 0) return
@@ -336,7 +368,12 @@ export function SceneEditorFlow({
     // depend on `obstructions`/`setObstructions`, or every ordinary
     // obstruction edit would re-trigger it against a `prev` that never
     // actually changed. `setObstructions` is a `useState` setter (stable
-    // identity across renders), so omitting it is safe.
+    // identity across renders), so omitting it is safe. `tracedShapes` is
+    // read here only to classify the current/previous anchor as
+    // sentinel-vs-real; it already changes in lockstep with `sceneOrigin`
+    // (which is itself derived from it), so it doesn't need to be a
+    // separate dependency to be read with an up-to-date value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sceneOrigin])
 
   // Mount step 1 as soon as the overlay is first opened, and mount each

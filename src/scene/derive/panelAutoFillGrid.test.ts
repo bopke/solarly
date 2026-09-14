@@ -138,4 +138,44 @@ describe('panelAutoFillGrid', () => {
     const second = panelAutoFillGrid(rectangle4x2, panel1mBy0_5m)
     expect(second).toEqual(first)
   })
+
+  it('panel count reflects the actual panel physical footprint, not a fixed generic assumption (PR #100 review Finding 1)', () => {
+    // Root-cause regression for issue #88 item 1: `SceneEditorFlow` used to
+    // pass a real panel preset's wattage (`panelPreset`) into the
+    // generation calc while the 3D preview's auto-fill grid still used the
+    // generic `generic-residential-default` preset's 1000x2000mm
+    // dimensions (`defaultPanel`) regardless — silently decoupling panel
+    // *count* from panel *wattage*. This test pins the geometry-layer half
+    // of that bug directly: a real large-format panel (Trina Solar Vertex
+    // TSM-NEG21C.20 670, 1303x2384mm — see `panel-presets/index.ts`'s
+    // `trina-vertex-670`) must tile a fixed 6m x 4m roof footprint into
+    // meaningfully *fewer* panels than the generic 1000x2000mm default,
+    // not the same count. (The reviewer measured a real-world case where
+    // the count didn't move: ~1.55x too many panels at the real preset's
+    // wattage, ~55% overestimated generation.)
+    const roof6x4 = [
+      { x: 0, y: 0 },
+      { x: 6, y: 0 },
+      { x: 6, y: 4 },
+      { x: 0, y: 4 },
+    ]
+    const genericDefault = panelAutoFillGrid(
+      roof6x4,
+      { widthMm: 1000, heightMm: 2000 },
+      { columnGapM: 0, rowGapM: 0 },
+    )
+    const trinaVertex670 = panelAutoFillGrid(
+      roof6x4,
+      { widthMm: 1303, heightMm: 2384 },
+      { columnGapM: 0, rowGapM: 0 },
+    )
+    // Exact hand-checkable tilings: the 24m^2 footprint fits a clean 6x2
+    // grid of 1m x 2m generic panels, and only a 4x1 grid of the
+    // physically larger 1.303m x 2.384m real panels.
+    expect(genericDefault.panels).toHaveLength(12)
+    expect(trinaVertex670.panels).toHaveLength(4)
+    expect(trinaVertex670.panels.length).toBeLessThan(
+      genericDefault.panels.length,
+    )
+  })
 })

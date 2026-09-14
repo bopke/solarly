@@ -45,6 +45,17 @@ vi.mock('../tracing', () => ({
       { lat: 52.5055, lon: 13.4005 },
       { lat: 52.505, lon: 13.4005 },
     ]
+    // A third square, far from `square`/`square2` — used by the Finding-2
+    // regression test below (PR #100 review) to establish a *new real*
+    // anchor after all shapes were deleted (the `{0,0}` sentinel
+    // in-between), so a reprojection misfire through that sentinel would
+    // be obvious (a ~905km jump) rather than coincidentally small.
+    const square3 = [
+      { lat: 10, lon: 20 },
+      { lat: 10.0005, lon: 20 },
+      { lat: 10.0005, lon: 20.0005 },
+      { lat: 10, lon: 20.0005 },
+    ]
     return (
       <div data-testid="tracing-step">
         <button
@@ -80,6 +91,22 @@ vi.mock('../tracing', () => ({
           }
         >
           delete-first-shape
+        </button>
+        {/* Deleting the *only* traced shape (as opposed to `delete-first-shape`,
+            which still leaves one behind) — this is what drives
+            `sceneAnchorOrigin` to its `{0,0}` no-shapes sentinel. */}
+        <button onClick={() => onShapesChange([], false)}>
+          delete-all-shapes
+        </button>
+        <button
+          onClick={() =>
+            onShapesChange(
+              [{ id: 'shape-3', kind: 'roof-face', polygon: square3 }],
+              false,
+            )
+          }
+        >
+          trace-far-shape
         </button>
       </div>
     )
@@ -143,14 +170,24 @@ vi.mock('../scene', () => ({
     obstructions,
     onObstructionsChange,
     onPanelLayoutChange,
+    defaultPanel,
   }: {
     shapes: { id: string }[]
     obstructions?: FakeObstruction[]
     onObstructionsChange?: (obstructions: FakeObstruction[]) => void
     onPanelLayoutChange?: (layouts: FakePanelLayout[]) => void
+    defaultPanel?: { widthMm: number; heightMm: number }
   }) => (
     <div data-testid="scene3d-step">
       <div data-testid="scene3d-shape-count">{shapes.length}</div>
+      {/* Exposes the exact `defaultPanel` prop `SceneEditorFlow` computed/
+          passed down — needed to catch PR #100 review Finding 1 (panel
+          *count*, driven by this prop, silently using the generic
+          default's dimensions while panel *wattage*, driven by
+          `panelPreset`, used the real selected preset). */}
+      <div data-testid="scene3d-default-panel">
+        {JSON.stringify(defaultPanel)}
+      </div>
       <button
         onClick={() =>
           onObstructionsChange?.([
@@ -207,15 +244,18 @@ vi.mock('../scene', () => ({
 import { SceneEditorFlow } from './SceneEditorFlow'
 import type { SceneApplyResult } from './SceneEditorFlow'
 import type { SceneDesignState } from './types'
+import { PANEL_PRESETS, type PanelPreset } from '../../panel-presets'
 
 const LOCATION = { lat: 52.5, lon: 13.4 }
 
 function Harness({
   onApply,
   onStateChange,
+  panelPreset,
 }: {
   onApply?: (result: SceneApplyResult) => void
   onStateChange?: (state: SceneDesignState) => void
+  panelPreset?: PanelPreset
 }): ReactNode {
   return (
     <SceneEditorFlow
@@ -224,11 +264,53 @@ function Harness({
       onClose={() => {}}
       onApply={onApply}
       onStateChange={onStateChange}
+      panelPreset={panelPreset}
     />
   )
 }
 
 describe('SceneEditorFlow', () => {
+  it("derives the 3D preview's defaultPanel from the given panelPreset's own dimensions, not the generic default (PR #100 review Finding 1)", async () => {
+    // Regression for issue #88 item 1 being only half-wired: `App.tsx`
+    // passes a real selected `panelPreset` (driving wattage) but was never
+    // passing a matching `defaultPanel` (driving the 3D preview's
+    // auto-fill panel *count*) — so a real preset's wattage could be
+    // combined with the generic preset's smaller physical footprint,
+    // producing too many panels each rated too high. The fix makes
+    // `defaultPanel` default to `panelPreset`'s own widthMm/heightMm, so
+    // passing a real preset alone (no separate `defaultPanel` override)
+    // is enough to keep panel count and wattage in agreement.
+    const trinaVertex670 = PANEL_PRESETS.find(
+      (p) => p.id === 'trina-vertex-670',
+    )
+    expect(trinaVertex670).toBeDefined()
+    expect(trinaVertex670).toMatchObject({ widthMm: 1303, heightMm: 2384 })
+
+    const user = userEvent.setup()
+    render(<Harness panelPreset={trinaVertex670} />)
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(screen.getByTestId('scene3d-default-panel')).toHaveTextContent(
+      JSON.stringify({ widthMm: 1303, heightMm: 2384 }),
+    )
+  })
+
+  it('falls back to the generic default preset’s own dimensions for defaultPanel when no panelPreset is given', async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(screen.getByTestId('scene3d-default-panel')).toHaveTextContent(
+      JSON.stringify({ widthMm: 1000, heightMm: 2000 }),
+    )
+  })
+
   it('starts on step 1 with Next disabled until a valid shape is traced', async () => {
     const user = userEvent.setup()
     render(<Harness />)
@@ -501,15 +583,65 @@ describe('SceneEditorFlow', () => {
 
     const lastState = onStateChange.mock.calls.at(-1)?.[0] as SceneDesignState
     expect(lastState.obstructions).toHaveLength(1)
-    // The obstruction was at (0, 0) relative to the old anchor (shape-1,
-    // ~500m south of shape-2) — re-projected into the new anchor (shape-2),
-    // its position must have shifted by a real, non-zero amount rather
-    // than staying frozen at (0, 0) as it would without the re-projection
-    // effect.
+    // The obstruction was at (0, 0) relative to the old anchor (shape-1's
+    // centroid, { lat: 52.50025, lon: 13.40025 }) — re-projected into the
+    // new anchor (shape-2's centroid, { lat: 52.50525, lon: 13.40025 },
+    // ~500m due north, same longitude). Pinning the exact expected
+    // coordinates (rather than just "some large-ish number") is
+    // deliberate — PR #100 review Finding 3: a sign-inverted, doubled, or
+    // x/y-swapped shift would all satisfy a loose magnitude-only
+    // assertion, which is exactly the double-shift failure class this
+    // effect most needs to catch. Same longitude means the offset is pure
+    // north-south, so x is exactly 0; y is
+    // `toRadians(52.50025 - 52.50525) * EARTH_RADIUS_M` (the mocked
+    // `offsetToSceneOrigin` above) ≈ -555.97.
     const reprojected = lastState.obstructions[0].position
-    expect(Math.abs(reprojected.x) + Math.abs(reprojected.y)).toBeGreaterThan(
-      100,
+    expect(reprojected.x).toBeCloseTo(0)
+    expect(reprojected.y).toBeCloseTo(-555.97, 1)
+  })
+
+  it('does not misfire a ~905km re-projection through the {0,0} no-shapes sentinel (PR #100 review Finding 2)', async () => {
+    // Regression for: place an obstruction against a real anchor, delete
+    // every traced shape (sceneAnchorOrigin momentarily falls back to the
+    // `{0,0}` sentinel — step 1 stays mounted for this component's whole
+    // lifetime, so this is reachable well after obstructions were placed),
+    // then trace a brand-new shape at an unrelated real-world location
+    // (establishing a new real anchor). Naively re-projecting straight
+    // through the `{0,0}` sentinel would fling the obstruction by
+    // `offsetToSceneOrigin`'s full lat/lon delta to `{0,0}` — on the order
+    // of thousands of kilometers for `square`/`square3`'s coordinates —
+    // rather than leaving it sensibly in place. The fix: skip
+    // re-projecting whenever either the old or the new anchor is the
+    // zero-shapes sentinel, so the obstruction is simply left as-is across
+    // both of these transitions.
+    const user = userEvent.setup()
+    const onStateChange = vi.fn()
+    render(<Harness onStateChange={onStateChange} />)
+
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    // Place an obstruction while shape-1 (real anchor) is current.
+    await user.click(screen.getByRole('button', { name: 'add-obstruction' }))
+
+    // Delete the only traced shape: anchor becomes the `{0,0}` sentinel.
+    await user.click(
+      screen.getByRole('button', { name: 'delete-all-shapes', hidden: true }),
     )
+    // Trace a new shape far away: anchor becomes a new real value.
+    await user.click(
+      screen.getByRole('button', { name: 'trace-far-shape', hidden: true }),
+    )
+
+    const lastState = onStateChange.mock.calls.at(-1)?.[0] as SceneDesignState
+    expect(lastState.obstructions).toHaveLength(1)
+    // Neither transition (real -> sentinel, sentinel -> real) is a valid
+    // coordinate transform, so both are skipped and the obstruction's
+    // position is left exactly as it was placed — not flung ~905km off
+    // through the fake `{0,0}` origin.
+    const finalPosition = lastState.obstructions[0].position
+    expect(finalPosition).toEqual({ x: 0, y: 0 })
   })
 
   it('preserves step 1 and step 2 data when navigating back and forward', async () => {
