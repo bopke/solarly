@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { panelPowerOutput, poaIrradiance } from '../solar-physics/index.ts'
 import { sunAltitudeAzimuthToEnuDirection } from '../solar-physics/index.ts'
 import type { PanelSpec } from '../solar-physics/index.ts'
@@ -283,5 +283,53 @@ describe('computeArrayPowerWithOcclusion', () => {
     // output — i.e. the clear panel isn't being dragged down to zero by
     // its shaded neighbor.
     expect(totalPowerW).toBeGreaterThan(occludedOnlyPowerW * 1.5)
+  })
+
+  it('warns in dev when array.panelCount disagrees with the real scene panel count (issue #88, item 3)', () => {
+    // `array.panelCount` (bookkeeping/display only) should always agree
+    // with `geometry.panels.length` (the actual power-computation
+    // authority) by construction — this only fires the dev-time invariant
+    // check deliberately, by handing in a `PanelArrayConfig` whose
+    // `panelCount` doesn't match the single-panel `geometry` fixture.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const geometry = resolveArrayScenePanels(PANEL_ARRAY, {
+      shapes: [{ id: 'roof', vertices: ROOF_VERTICES }],
+      obstructions: [],
+      panels: [{ shapeId: 'roof', position: { x: 0, y: 0, z: 1 } }],
+    })!
+
+    computeArrayPowerWithOcclusion(
+      { ...PANEL_ARRAY, panelCount: 99 },
+      geometry,
+      SUN,
+      HORIZONTAL_IRRADIANCE,
+      AMBIENT_TEMP_C,
+      LOSSES_PERCENT,
+    )
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0][0]).toMatch(/panelCount/)
+    warnSpy.mockRestore()
+  })
+
+  it('does not warn when array.panelCount agrees with the real scene panel count', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const geometry = resolveArrayScenePanels(PANEL_ARRAY, {
+      shapes: [{ id: 'roof', vertices: ROOF_VERTICES }],
+      obstructions: [],
+      panels: [{ shapeId: 'roof', position: { x: 0, y: 0, z: 1 } }],
+    })!
+
+    computeArrayPowerWithOcclusion(
+      PANEL_ARRAY, // panelCount: 1, matching the single-panel geometry above
+      geometry,
+      SUN,
+      HORIZONTAL_IRRADIANCE,
+      AMBIENT_TEMP_C,
+      LOSSES_PERCENT,
+    )
+
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })

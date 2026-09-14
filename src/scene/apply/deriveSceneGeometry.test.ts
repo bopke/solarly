@@ -313,6 +313,94 @@ describe('deriveSceneGeometryFromScene', () => {
     expect(Math.abs(wallPanel.position.z) / maxVertexZ).toBeLessThan(10)
   })
 
+  it('anchors sceneOrigin on the first-traced shape even when it is configured last (regression for issue #84)', () => {
+    // Shape B is traced *second* but configured *first* — with the old
+    // "first resolvable shape" anchor, the scene origin would be B's
+    // origin at this point. `sceneAnchorOrigin`/`deriveSceneGeometryFromScene`
+    // must anchor on A (traced first) regardless of configuration order, so
+    // an obstruction placed against this "B-only-configured" scene lands in
+    // the exact same frame it would once A is configured too.
+    const bOnlyConfigured: SceneDesignState = makeState({
+      tracedShapes: [
+        { id: 'flat-roof', kind: 'roof-face', polygon: SHAPE_A_POLYGON },
+        { id: 'tilted-roof', kind: 'roof-face', polygon: SHAPE_B_POLYGON },
+      ],
+      shapeConfigs: [{ shapeId: 'tilted-roof', tiltDeg: 30, azimuthDeg: 90 }],
+      obstructions: [
+        {
+          id: 'o1',
+          kind: 'tree',
+          position: { x: 3, y: -2 },
+          heightM: 6,
+          radiusM: 1.5,
+        },
+      ],
+    })
+
+    const bothConfigured = makeTwoShapeState({
+      obstructions: bOnlyConfigured.obstructions,
+    })
+
+    const geometryBOnly = deriveSceneGeometryFromScene(bOnlyConfigured)
+    const geometryBoth = deriveSceneGeometryFromScene(bothConfigured)
+
+    // The tilted-roof shape's own vertices (relative to the shared scene
+    // frame) must be identical in both snapshots — the anchor didn't shift
+    // just because A later got configured.
+    const tiltedBOnly = geometryBOnly.shapes.find(
+      (s) => s.id === 'tilted-roof',
+    )!
+    const tiltedBoth = geometryBoth.shapes.find((s) => s.id === 'tilted-roof')!
+    tiltedBOnly.vertices.forEach((v, i) => {
+      expect(v.x).toBeCloseTo(tiltedBoth.vertices[i].x, 6)
+      expect(v.y).toBeCloseTo(tiltedBoth.vertices[i].y, 6)
+      expect(v.z).toBeCloseTo(tiltedBoth.vertices[i].z, 6)
+    })
+
+    // The real #84 failure mode: `Obstruction.position` is frozen data
+    // (recorded once, at click time — see the module doc's "Anchor
+    // stability" section), so what actually matters is its position
+    // *relative to* the shapes around it, not in isolation. With the old
+    // "first resolvable shape" anchor, tilted-roof's vertices would sit at
+    // offset (0, 0) while only B is configured, then jump by (20, 30) once
+    // A's config lands — silently moving the obstruction's position
+    // relative to tilted-roof by that same 36+m amount even though the
+    // obstruction itself was never touched. Asserting the obstruction's
+    // offset from a fixed point on tilted-roof stays constant across both
+    // snapshots directly catches that drift.
+    const obstruction = bOnlyConfigured.obstructions[0]
+    const relativeBOnly = {
+      x: obstruction.position.x - tiltedBOnly.vertices[0].x,
+      y: obstruction.position.y - tiltedBOnly.vertices[0].y,
+    }
+    const relativeBoth = {
+      x: obstruction.position.x - tiltedBoth.vertices[0].x,
+      y: obstruction.position.y - tiltedBoth.vertices[0].y,
+    }
+    expect(relativeBOnly.x).toBeCloseTo(relativeBoth.x, 6)
+    expect(relativeBOnly.y).toBeCloseTo(relativeBoth.y, 6)
+  })
+
+  it.each([
+    ['tiltDeg', { tiltDeg: NaN, azimuthDeg: 180 }],
+    ['azimuthDeg', { tiltDeg: 30, azimuthDeg: NaN }],
+  ])(
+    'excludes a shape whose config has NaN %s, rather than producing NaN geometry (regression for issue #89)',
+    (_field, config) => {
+      const state = makeState({
+        tracedShapes: [
+          { id: 'flat-roof', kind: 'roof-face', polygon: SHAPE_A_POLYGON },
+        ],
+        shapeConfigs: [{ shapeId: 'flat-roof', ...config }],
+      })
+
+      const geometry = deriveSceneGeometryFromScene(state)
+
+      expect(geometry.shapes).toEqual([])
+      expect(geometry.panels).toEqual([])
+    },
+  )
+
   it('produces an empty SceneGeometry (aside from obstructions) for a scene with only obstructions placed', () => {
     const state = makeState({
       obstructions: [

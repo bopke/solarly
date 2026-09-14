@@ -197,6 +197,33 @@ describe('deriveSystemConfigFromScene', () => {
     expect(config.arrays[0].shapeId).toBe('shape-1')
   })
 
+  it.each([
+    ['tiltDeg', { tiltDeg: NaN, azimuthDeg: 180 }],
+    ['azimuthDeg', { tiltDeg: 30, azimuthDeg: NaN }],
+  ])(
+    'leaves shapeId undefined (and still produces the array) for a configured shape with NaN %s (regression for issue #89)',
+    (_field, config) => {
+      // NaN comparisons (`NaN < 0`, `NaN >= 90`) evaluate to `false`, so a
+      // NaN tilt/azimuth used to silently pass `polygonToExtrusionGeometry`'s
+      // own range validation and produce NaN vertices/area — not reachable
+      // via the UI today (ConfigureShapes gates advancement before a NaN
+      // can land here), but hardened via the shared `resolveShapeGeometry`
+      // helper (issue #88's item 4) so this derivation gets the guard too.
+      const state = makeState({
+        tracedShapes: [{ id: 's1', kind: 'roof-face', polygon: SQUARE }],
+        shapeConfigs: [{ shapeId: 's1', ...config }],
+        panelLayouts: [{ shapeId: 's1', panelCount: 10, panels: [] }],
+      })
+
+      const derived = deriveSystemConfigFromScene(state, {
+        panelPreset: PRESET,
+      })
+
+      expect(derived.arrays).toHaveLength(1)
+      expect(derived.arrays[0].shapeId).toBeUndefined()
+    },
+  )
+
   it('leaves shapeId undefined for a configured shape whose polygon cannot produce valid geometry (matching deriveSceneGeometryFromScene’s own skip condition, per PR #82 review)', () => {
     // An empty polygon is a config attached to a shape that isn't
     // geometrizable — `deriveSceneGeometryFromScene` would skip it

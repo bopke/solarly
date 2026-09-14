@@ -3,12 +3,17 @@ import { SceneTracing } from '../tracing'
 import type { TracedShape } from '../tracing'
 import { ConfigureShapes } from '../configure'
 import type { ShapeConfig } from '../configure'
-import { Scene3DView } from '../scene'
+import { Scene3DView, offsetToSceneOrigin } from '../scene'
 import type { Obstruction, Scene3DShape, ShapePanelLayout } from '../scene'
-import { polygonToExtrusionGeometry, type PanelDimensions } from '../derive'
+import {
+  polygonToExtrusionGeometry,
+  type LatLon,
+  type PanelDimensions,
+} from '../derive'
 import {
   deriveSceneGeometryFromScene,
   deriveSystemConfigFromScene,
+  sceneAnchorOrigin,
 } from '../apply'
 import { PANEL_PRESETS, type PanelPreset } from '../../panel-presets'
 import type { SceneGeometry, SystemConfig } from '../../simulation'
@@ -289,6 +294,50 @@ export function SceneEditorFlow({
   const [isShapeConfigValid, setIsShapeConfigValid] = useState(true)
   const [obstructions, setObstructions] = useState<Obstruction[]>([])
   const [panelLayouts, setPanelLayouts] = useState<ShapePanelLayout[]>([])
+
+  // The shared scene-local frame's anchor (issue #84's `sceneAnchorOrigin`
+  // — the first *traced* shape's polygon centroid, independent of which
+  // shapes' step-2 config has resolved). Passed straight through to
+  // `Scene3DView` below as its `sceneOrigin` prop, so every ground click
+  // it resolves an obstruction's position from uses this exact same frame
+  // — and `deriveSceneGeometryFromScene` (in `handleApply` below) derives
+  // its own `sceneOrigin` the identical way from the identical
+  // `tracedShapes`, so the two never disagree.
+  const sceneOrigin = useMemo(
+    () => sceneAnchorOrigin(tracedShapes),
+    [tracedShapes],
+  )
+
+  // Defensive re-projection (the module doc's second #84 mitigation,
+  // alongside anchoring on trace order rather than resolvability): even a
+  // trace-order anchor can still move if the first-traced shape itself is
+  // deleted (mapbox-gl-draw allows deleting a traced shape mid-session).
+  // Rather than leave already-placed obstructions silently misaligned
+  // relative to the shapes around them when that happens, re-express every
+  // stored `Obstruction.position` in the *new* frame the instant the
+  // anchor changes, so they stay geometrically consistent with the scene
+  // regardless of why the anchor moved.
+  const prevSceneOriginRef = useRef<LatLon | null>(null)
+  useEffect(() => {
+    const prev = prevSceneOriginRef.current
+    prevSceneOriginRef.current = sceneOrigin
+    if (!prev) return // First render: nothing to re-project yet.
+    if (prev.lat === sceneOrigin.lat && prev.lon === sceneOrigin.lon) return
+
+    const delta = offsetToSceneOrigin(prev, sceneOrigin)
+    if (delta.x === 0 && delta.y === 0) return
+    setObstructions((current) =>
+      current.map((o) => ({
+        ...o,
+        position: { x: o.position.x + delta.x, y: o.position.y + delta.y },
+      })),
+    )
+    // Only depending on `sceneOrigin` is deliberate: this must NOT also
+    // depend on `obstructions`/`setObstructions`, or every ordinary
+    // obstruction edit would re-trigger it against a `prev` that never
+    // actually changed. `setObstructions` is a `useState` setter (stable
+    // identity across renders), so omitting it is safe.
+  }, [sceneOrigin])
 
   // Mount step 1 as soon as the overlay is first opened, and mount each
   // later step the first time it's actually reached — then never drop
@@ -621,6 +670,7 @@ export function SceneEditorFlow({
               obstructions={obstructions}
               onObstructionsChange={setObstructions}
               location={location}
+              sceneOrigin={sceneOrigin}
               className={styles.scene3D}
             />
           </div>
@@ -642,6 +692,22 @@ export function SceneEditorFlow({
                 {obstructions.length} obstruction
                 {obstructions.length === 1 ? '' : 's'} placed. Applying will
                 replace the manual single-array configuration with this scene.
+              </p>
+              {/*
+                Issue #88, item 2: applying a scene zeroes out
+                `manualShadingPercent` for every geometry-resolved array
+                (correct — shading is instead computed from the placed
+                obstructions/shape geometry at simulation time, see
+                `deriveSystemConfig.ts`'s `DEFAULT_SCENE_MANUAL_SHADING_PERCENT`
+                and `sceneOcclusion.ts`), but nothing told the user that any
+                shading percentage they'd entered on the manual form is
+                about to stop applying. This note makes that swap visible
+                rather than silent.
+              */}
+              <p className={styles.applyShadingNote}>
+                Any manually-entered shading percentage from the single-array
+                form won&rsquo;t apply here — this scene&rsquo;s shading is
+                instead computed from its traced shapes and placed obstructions.
               </p>
 
               <div className={styles.applyField}>

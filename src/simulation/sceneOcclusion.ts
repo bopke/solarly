@@ -149,6 +149,23 @@ export interface HourSunGeometry {
  * @param lossesPercent The array's combined system+manual-shading losses
  *   percentage (same aggregate the non-occlusion path already uses — see
  *   each caller's `combinedLossesPercent`), applied per panel.
+ *
+ * ## Invariant: `geometry.panels.length` is the power authority, not `array.panelCount` (issue #88, item 3)
+ *
+ * This function sums power over `geometry.panels` (the real per-panel
+ * positions from `SceneGeometry`) — `array.panelCount` is never read here.
+ * By construction, the two currently can't disagree: `geometry.panels` is
+ * built by `resolveArrayScenePanels` by filtering `SceneGeometry.panels`
+ * down to this array's `shapeId`, and both that filtered count and
+ * `array.panelCount` trace back to the exact same `ShapePanelLayout`
+ * (`Scene3DView`'s `onPanelLayoutChange` — see `ShapePanelLayout`'s own
+ * doc comment). Nothing *enforces* that agreement, though — a future
+ * change to either derivation path could silently let them drift, which
+ * would either under/over-count generation while `panelCount` (and any
+ * kWp figure derived from it) stayed put, showing a rated capacity that no
+ * longer matches what's actually being simulated. This dev-only check
+ * exists to catch that drift early rather than relying on it staying true
+ * by convention.
  */
 export function computeArrayPowerWithOcclusion(
   array: PanelArrayConfig,
@@ -158,6 +175,16 @@ export function computeArrayPowerWithOcclusion(
   ambientTempC: number,
   lossesPercent: number,
 ): number {
+  if (import.meta.env.DEV && geometry.panels.length !== array.panelCount) {
+    console.warn(
+      `computeArrayPowerWithOcclusion: array.panelCount (${array.panelCount}) ` +
+        `disagrees with sceneGeometry.panels[shapeId="${array.shapeId}"].length ` +
+        `(${geometry.panels.length}). Power is computed from the latter — ` +
+        'panelCount is display/kWp bookkeeping only and should always agree ' +
+        "with it by construction (see this function's doc comment).",
+    )
+  }
+
   const panelSpec: PanelSpec = {
     ratedWattsPeak: array.wattsPerPanel,
     efficiencyPercent: array.efficiencyPercent,

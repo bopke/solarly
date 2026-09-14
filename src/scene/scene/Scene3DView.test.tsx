@@ -110,6 +110,7 @@ vi.mock('@react-three/drei', () => ({
 // Imported after the mocks above so the mocked modules are in place.
 import { Scene3DView } from './Scene3DView'
 import { panelAutoFillGrid, polygonToExtrusionGeometry } from '../derive'
+import { offsetToSceneOrigin } from './geometryBuilders'
 
 const flatSquare = (latOffset: number, lonOffset: number, sizeDeg = 0.0005) => [
   { lat: 52.5 + latOffset, lon: 13.4 + lonOffset },
@@ -229,6 +230,41 @@ describe('Scene3DView', () => {
     expect(container.querySelectorAll('mesh')).toHaveLength(
       2 + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT + GROUND_SHADOW_MESH_COUNT,
     )
+  })
+
+  it('uses the sceneOrigin prop as the shared frame anchor instead of shapes[0]’s own origin (issue #84)', () => {
+    // Regression for the anchor-drift bug: `shapes` only ever lists shapes
+    // whose config has already resolved, so `shapes[0]` can silently
+    // change identity as a caller (`SceneEditorFlow`) configures shapes in
+    // a different order than they were traced. A `sceneOrigin` prop lets
+    // that caller pin the anchor to something stable (the first *traced*
+    // shape, regardless of config order) instead — this confirms the prop
+    // actually takes effect rather than being silently ignored in favor of
+    // `shapes[0].geometry.origin`.
+    const shapeGeometry = polygonToExtrusionGeometry(flatSquare(0, 0), 20, 180)
+    const shapes = [{ id: 'a', geometry: shapeGeometry }]
+    const explicitOrigin = { lat: 52.51, lon: 13.41 }
+
+    const { container } = render(
+      <Scene3DView shapes={shapes} sceneOrigin={explicitOrigin} />,
+    )
+
+    // `NorthArrowGizmo` also renders its own `<group>` earlier in the
+    // tree, so the *last* `<group>` (rendered by `shapes.map` at the very
+    // end of `Scene3DView`'s JSX, after the gizmo/ground meshes) is the
+    // one shape "a"'s `ShapeMesh` actually renders.
+    const groups = container.querySelectorAll('group')
+    const shapeGroup = groups[groups.length - 1]
+    const [x, y] = (shapeGroup?.getAttribute('position') ?? '')
+      .split(',')
+      .map(Number)
+
+    const expected = offsetToSceneOrigin(shapeGeometry.origin, explicitOrigin)
+    expect(x).toBeCloseTo(expected.x, 4)
+    expect(y).toBeCloseTo(expected.y, 4)
+    // Without the prop actually being honored, shape "a" (== shapes[0])
+    // would anchor itself and render at offset (0, 0) instead.
+    expect(Math.abs(x)).toBeGreaterThan(1)
   })
 
   it('lets a shape override the panel preset used for its own auto-fill', () => {

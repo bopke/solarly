@@ -34,6 +34,17 @@ vi.mock('../tracing', () => ({
       { lat: 52.5005, lon: 13.4005 },
       { lat: 52.5, lon: 13.4005 },
     ]
+    // A second, distinct square (~500m north) — used by the #84
+    // anchor-re-projection test below to simulate the first-traced shape
+    // (`shape-1`) later being deleted, which changes `sceneAnchorOrigin`'s
+    // result even though it's always trace-order (not resolvability)
+    // based.
+    const square2 = [
+      { lat: 52.505, lon: 13.4 },
+      { lat: 52.5055, lon: 13.4 },
+      { lat: 52.5055, lon: 13.4005 },
+      { lat: 52.505, lon: 13.4005 },
+    ]
     return (
       <div data-testid="tracing-step">
         <button
@@ -47,6 +58,29 @@ vi.mock('../tracing', () => ({
           trace-valid
         </button>
         <button onClick={() => onShapesChange([], true)}>trace-invalid</button>
+        <button
+          onClick={() =>
+            onShapesChange(
+              [
+                { id: 'shape-1', kind: 'roof-face', polygon: square },
+                { id: 'shape-2', kind: 'roof-face', polygon: square2 },
+              ],
+              false,
+            )
+          }
+        >
+          trace-two
+        </button>
+        <button
+          onClick={() =>
+            onShapesChange(
+              [{ id: 'shape-2', kind: 'roof-face', polygon: square2 }],
+              false,
+            )
+          }
+        >
+          delete-first-shape
+        </button>
       </div>
     )
   },
@@ -148,6 +182,25 @@ vi.mock('../scene', () => ({
       </button>
     </div>
   ),
+  // Real implementation (not a stub): `SceneEditorFlow`'s anchor
+  // re-projection effect (issue #84) calls this directly, so a mock that
+  // just returned `{ x: 0, y: 0 }` would silently mask that logic instead
+  // of exercising it. Mirrors `geometryBuilders.ts`'s own implementation.
+  offsetToSceneOrigin: (
+    shapeOrigin: { lat: number; lon: number },
+    sceneOrigin: { lat: number; lon: number },
+  ) => {
+    const EARTH_RADIUS_M = 6371000
+    const toRad = (deg: number) => (deg * Math.PI) / 180
+    const originLatRad = toRad(sceneOrigin.lat)
+    return {
+      x:
+        toRad(shapeOrigin.lon - sceneOrigin.lon) *
+        Math.cos(originLatRad) *
+        EARTH_RADIUS_M,
+      y: toRad(shapeOrigin.lat - sceneOrigin.lat) * EARTH_RADIUS_M,
+    }
+  },
 }))
 
 // Imported after the mocks above so the mocked modules are in place.
@@ -236,6 +289,20 @@ describe('SceneEditorFlow', () => {
     expect(
       screen.queryByRole('button', { name: 'Next' }),
     ).not.toBeInTheDocument()
+  })
+
+  it('shows a notice on the Apply step that manual shading is discarded in favor of computed shading (issue #88, item 2)', async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(screen.getByRole('heading', { name: 'Apply' })).toBeInTheDocument()
+    expect(screen.getByText(/won.t apply here/i)).toBeInTheDocument()
   })
 
   it('surfaces Scene3DView-reported panel layouts into the derived SystemConfig (PR #70 review finding 2)', async () => {
@@ -399,6 +466,50 @@ describe('SceneEditorFlow', () => {
 
     const lastState = onStateChange.mock.calls.at(-1)?.[0] as SceneDesignState
     expect(lastState.tracedShapes).toHaveLength(1)
+  })
+
+  it('re-projects already-placed obstructions if the sceneAnchorOrigin ever moves (issue #84 safety net)', async () => {
+    // `sceneAnchorOrigin` is trace-order based (the first *traced* shape),
+    // which stays fixed across mere reconfiguration — but it still moves
+    // if the first-traced shape itself is later deleted. This is the
+    // second #84 mitigation (alongside the trace-order anchor itself):
+    // when that happens, already-placed obstructions must be re-expressed
+    // in the new frame rather than silently drifting relative to the
+    // shapes around them.
+    const user = userEvent.setup()
+    const onStateChange = vi.fn()
+    render(<Harness onStateChange={onStateChange} />)
+
+    await user.click(screen.getByRole('button', { name: 'trace-two' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    // Place an obstruction (the mocked Scene3DView's stub always adds one
+    // at (0, 0)) while shape-1 is still the trace-order anchor.
+    await user.click(screen.getByRole('button', { name: 'add-obstruction' }))
+
+    onStateChange.mockClear()
+    // Simulate shape-1 (the anchor) being deleted, leaving shape-2 as the
+    // new first-traced shape — this moves sceneAnchorOrigin from shape-1's
+    // centroid to shape-2's. Step 1's panel is `aria-hidden` while step 3
+    // is active (see `SceneEditorFlow.tsx`'s doc comment on why — it stays
+    // mounted, just hidden), so `hidden: true` is needed to reach its
+    // button by role here.
+    await user.click(
+      screen.getByRole('button', { name: 'delete-first-shape', hidden: true }),
+    )
+
+    const lastState = onStateChange.mock.calls.at(-1)?.[0] as SceneDesignState
+    expect(lastState.obstructions).toHaveLength(1)
+    // The obstruction was at (0, 0) relative to the old anchor (shape-1,
+    // ~500m south of shape-2) — re-projected into the new anchor (shape-2),
+    // its position must have shifted by a real, non-zero amount rather
+    // than staying frozen at (0, 0) as it would without the re-projection
+    // effect.
+    const reprojected = lastState.obstructions[0].position
+    expect(Math.abs(reprojected.x) + Math.abs(reprojected.y)).toBeGreaterThan(
+      100,
+    )
   })
 
   it('preserves step 1 and step 2 data when navigating back and forward', async () => {
