@@ -270,14 +270,24 @@ function App() {
 
     // A genuinely different location was picked while a 3D scene is
     // already in progress — confirm before silently discarding traced
-    // shapes/configs/obstructions (issue #87). No existing custom modal/
-    // dialog pattern exists elsewhere in the app (checked src/ui and
-    // src/scene), so a native confirm() is used here rather than
-    // introducing a bespoke one just for this.
+    // shapes/configs/obstructions (issue #87). There's no reusable
+    // confirm/dialog *primitive* in src/ui or src/scene to reach for
+    // instead (`SceneEditorFlow` does render a `role="dialog"
+    // aria-modal="true"` full-screen overlay, but that's a step-flow
+    // surface, not a confirm component), so a native confirm() is used
+    // here rather than introducing a bespoke one just for this — see the
+    // PR #95 review's non-blocking note. Worth revisiting with a styled
+    // in-app confirm once a second call site wants one.
+    //
+    // The message spells out what Cancel does (keep the OLD location) —
+    // not just what Continue discards — since cancelling here rejects the
+    // whole location change, not just the scene reset; the picker's own
+    // displayed pin/coords are kept in sync with that via the `location`
+    // prop passed down to it below (PR #95 review's blocking finding).
     if (
       hasScene &&
       !window.confirm(
-        'Changing location will discard your in-progress 3D scene design (traced shapes, per-shape configuration, and obstructions). Continue?',
+        'Changing location will discard your in-progress 3D scene design (traced shapes, per-shape configuration, and obstructions).\n\nContinue to change location, or Cancel to keep your current location and scene.',
       )
     ) {
       return
@@ -400,6 +410,7 @@ function App() {
         locationSlot={
           <LocationPicker
             isHero={location === undefined}
+            location={location}
             onLocationChange={handleLocationChange}
           />
         }

@@ -20,10 +20,36 @@ export interface ResolvedLocation {
 }
 
 export interface LocationPickerProps {
-  /** Called whenever the resolved location changes (search pick, pin drag, or map click). */
+  /**
+   * Called whenever the user picks a location (search pick, pin drag, or map
+   * click) — the resolved value, not yet reflected in the picker's own
+   * display. In controlled mode (see `location` below) the parent decides
+   * whether the pick "sticks": call back with the same `location` value (or
+   * a rejected pick's prior value) to make the picker's pin/readout revert.
+   */
   onLocationChange: (location: ResolvedLocation) => void
-  /** Optional starting location — shows an initial pin/coords without requiring a search first. */
+  /**
+   * Optional starting location — shows an initial pin/coords without
+   * requiring a search first. Ignored after mount if `location` (below) is
+   * also supplied.
+   */
   initialLocation?: ResolvedLocation
+  /**
+   * Makes the displayed pin/coords controlled by the parent (issue #87 /
+   * PR #95 review): when supplied, the picker's rendered readout and map
+   * marker always reflect this value rather than the last value the user
+   * picked. This is what lets a parent reject a pick (e.g. the user
+   * cancels a "discard scene?" confirm in `App.tsx`) and have the picker's
+   * own UI snap back to the prior location instead of silently disagreeing
+   * with app state — see docs `handleLocationChange` in `App.tsx` and the
+   * PR #95 review's "blocking finding". Omit (leave `undefined` for the
+   * whole component lifetime) to keep the picker fully uncontrolled, as
+   * before — matches the optional-controlled-prop-pair convention used by
+   * `AppShell`'s `mode`/`onModeChange`, except here the single prop doubles
+   * as both value and "is this controlled" signal since `undefined` is
+   * already the picker's own "no location yet" state.
+   */
+  location?: ResolvedLocation
   /** Debounce delay, in ms, between the user typing and firing a geocode search. Default 350. */
   debounceMs?: number
   /** Free vector tile style URL. Defaults to OpenFreeMap's "liberty" style (no API key required). */
@@ -105,6 +131,7 @@ function createPin(
 export function LocationPicker({
   onLocationChange,
   initialLocation,
+  location: controlledLocation,
   debounceMs = DEFAULT_DEBOUNCE_MS,
   mapStyleUrl = DEFAULT_MAP_STYLE_URL,
   isHero = false,
@@ -115,9 +142,34 @@ export function LocationPicker({
     'idle' | 'loading' | 'no-results' | 'error'
   >('idle')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [resolvedLocation, setResolvedLocation] = useState<
+  // Tracked even in controlled mode (see `resolvedLocation` below) so the
+  // component keeps working exactly as before when the caller never
+  // supplies `location` — see the `LocationPickerProps.location` doc
+  // comment.
+  const [uncontrolledLocation, setUncontrolledLocation] = useState<
     ResolvedLocation | undefined
   >(initialLocation)
+  // The value actually rendered (readout text + map marker position).
+  // Once a parent supplies `location`, it — not the last value the user
+  // picked — is authoritative; this is what lets a rejected pick (parent
+  // declines to update its own `location` state) show up here as a
+  // revert rather than a silent desync. See PR #95 review.
+  const resolvedLocation =
+    controlledLocation !== undefined ? controlledLocation : uncontrolledLocation
+  // Bumped on every user-initiated pick (search result, map click, pin
+  // drag), independently of whether `resolvedLocation` above actually
+  // changes as a result. In controlled mode, a *rejected* pick leaves
+  // `resolvedLocation` unchanged (the parent didn't update `location`) —
+  // without this counter, the marker-sync effect below (keyed only on
+  // `resolvedLocation`) would have no signal to re-run and snap the
+  // marker back, since its dependency wouldn't have changed either.
+  const [pickNonce, setPickNonce] = useState(0)
+  // Which kind of pick is pending a sync (read by the marker-sync effect
+  // to decide whether to `flyTo` — search picks recenter/zoom, map
+  // clicks/drags deliberately don't, see `selectFromSearch`/
+  // `selectFromMap` below). A ref, not state: it's only ever read
+  // alongside a `pickNonce` bump, never needs to trigger a render itself.
+  const pendingPickKindRef = useRef<'search' | 'map'>('map')
   const [activeIndex, setActiveIndex] = useState<number>(-1)
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
@@ -198,16 +250,17 @@ export function LocationPicker({
   // --- Resolve + notify --------------------------------------------------
 
   // Search selection: the user had no prior map context (they typed a
-  // place name), so flying to a reasonable zoom is the right call.
+  // place name), so flying to a reasonable zoom is the right call — but
+  // only once the pick actually sticks (see the marker-sync effect below,
+  // which is what actually calls `flyTo`/moves the pin now). In
+  // uncontrolled mode a pick always "sticks" immediately, so this behaves
+  // exactly as before.
   function selectFromSearch(lat: number, lon: number) {
     const next = resolveFromCoords(lat, lon)
-    setResolvedLocation(next)
+    setUncontrolledLocation(next)
+    pendingPickKindRef.current = 'search'
+    setPickNonce((n) => n + 1)
     onLocationChangeRef.current(next)
-
-    if (mapRef.current) {
-      mapRef.current.flyTo({ center: [lon, lat], zoom: RESOLVED_ZOOM })
-    }
-    placePin(lat, lon)
   }
 
   // Map click / pin drag: the user is already looking at the area they
@@ -215,9 +268,10 @@ export function LocationPicker({
   // is left exactly where it is — no flyTo, no forced zoom.
   function selectFromMap(lat: number, lon: number) {
     const next = resolveFromCoords(lat, lon)
-    setResolvedLocation(next)
+    setUncontrolledLocation(next)
+    pendingPickKindRef.current = 'map'
+    setPickNonce((n) => n + 1)
     onLocationChangeRef.current(next)
-    placePin(lat, lon)
   }
 
   // NOTE: both `selectFromSearch` and `selectFromMap` are re-created every
@@ -236,6 +290,30 @@ export function LocationPicker({
       markerRef.current = createPin(mapRef.current, lat, lon, selectFromMap)
     }
   }
+
+  // Keeps the map marker (and, via `resolvedLocation` feeding the JSX
+  // below, the coords readout) in sync with whatever is actually
+  // authoritative — see `resolvedLocation`'s doc comment above. Runs after
+  // every user pick (`pickNonce`) even when `resolvedLocation` itself
+  // didn't change, which is exactly the case that matters: a controlled
+  // parent rejecting a pick (PR #95 review's blocking finding — cancelling
+  // the "discard scene?" confirm in `App.tsx` must not leave the pin/
+  // readout showing the rejected location). `flyTo` only fires for a
+  // search-originated pick that actually stuck (mirrors the old
+  // `selectFromSearch` behavior); a rejected search pick or any map-
+  // originated pick just repositions the pin in place, matching
+  // `selectFromMap`'s original no-camera-move behavior.
+  useEffect(() => {
+    if (!resolvedLocation) return
+    placePin(resolvedLocation.lat, resolvedLocation.lon)
+    if (pendingPickKindRef.current === 'search' && mapRef.current) {
+      mapRef.current.flyTo({
+        center: [resolvedLocation.lon, resolvedLocation.lat],
+        zoom: RESOLVED_ZOOM,
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedLocation, pickNonce])
 
   function handleSelectResult(result: GeocodeResult) {
     lastProgrammaticQueryRef.current = result.displayName
@@ -284,7 +362,11 @@ export function LocationPicker({
     const container = mapContainerRef.current
     if (!container) return
 
-    const start = initialLocation
+    // Prefer a controlled `location` over `initialLocation` if the caller
+    // somehow supplies both (documented on `LocationPickerProps.location`)
+    // — mount-time only, per the effect's own "intentionally created once"
+    // note below.
+    const start = controlledLocation ?? initialLocation
     const map = new MapLibreMap({
       container,
       style: mapStyleUrl,
@@ -327,8 +409,10 @@ export function LocationPicker({
       map.remove()
       mapRef.current = null
     }
-    // Map is intentionally created once; style/initialLocation changes
-    // after mount are out of scope for M1.
+    // Map is intentionally created once; style/initialLocation/location
+    // changes after mount are out of scope here — later `location` changes
+    // are instead picked up by the marker-sync effect above (which only
+    // moves the existing marker/camera, not the map instance itself).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
