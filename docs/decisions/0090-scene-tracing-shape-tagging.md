@@ -33,7 +33,7 @@ every single polygon even when the user is tracing five roof faces back to
 back.
 
 The toggle alone has an obvious failure mode, though: forgetting to flip
-it before drawing the next shape, or changing your mind about a
+it before drawing the next shape, or changing your mind about an
 already-traced shape. Rather than requiring a redraw to fix that, every
 traced shape in the list keeps its own kind dropdown, editable at any
 time — cheap to add since the kind lives in each polygon's own feature

@@ -533,4 +533,89 @@ describe('SceneEditorFlow', () => {
     await user.click(screen.getByRole('button', { name: 'Close' }))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  // Issue #93: focus management on the overlay. `Harness`'s stubbed step 1
+  // gives a small, known set of focusable elements to assert an exact
+  // order against: the header's Close button (DOM order puts it before
+  // any step content), then `SceneTracing`'s two stubbed buttons —
+  // step 1's Back (disabled: the first step) and Next (disabled: nothing
+  // traced yet) buttons are correctly excluded from the trap already.
+  it('moves focus into the dialog on open', () => {
+    render(<Harness />)
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus()
+  })
+
+  it('traps Tab within the dialog, wrapping from the last focusable element back to the first', async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+
+    const closeButton = screen.getByRole('button', { name: 'Close' })
+    const traceValid = screen.getByRole('button', { name: 'trace-valid' })
+    const traceInvalid = screen.getByRole('button', { name: 'trace-invalid' })
+
+    expect(closeButton).toHaveFocus()
+    await user.tab()
+    expect(traceValid).toHaveFocus()
+    await user.tab()
+    expect(traceInvalid).toHaveFocus()
+    // Wraps back to the first focusable element, rather than leaving the
+    // dialog (e.g. the fixture wrapper `render` mounts into, or the
+    // document body).
+    await user.tab()
+    expect(closeButton).toHaveFocus()
+
+    // Shift+Tab from the first element wraps backward to the last.
+    await user.tab({ shift: true })
+    expect(traceInvalid).toHaveFocus()
+  })
+
+  it('restores focus to the previously focused element on close', () => {
+    const trigger = document.createElement('button')
+    trigger.textContent = 'Design in 3D'
+    document.body.appendChild(trigger)
+    trigger.focus()
+    expect(trigger).toHaveFocus()
+
+    const { rerender } = render(
+      <SceneEditorFlow open location={LOCATION} onClose={() => {}} />,
+    )
+    expect(trigger).not.toHaveFocus()
+
+    rerender(
+      <SceneEditorFlow open={false} location={LOCATION} onClose={() => {}} />,
+    )
+    expect(trigger).toHaveFocus()
+
+    document.body.removeChild(trigger)
+  })
+
+  it('marks sibling content inert while open, and clears it again on close', () => {
+    // Mirrors `App.tsx`'s actual composition: `AppShell` and
+    // `SceneEditorFlow` are rendered as siblings under one common parent
+    // (not one nested inside the other), so the overlay's "mark
+    // background content inert" logic — which walks its own real DOM
+    // parent's other children — has a genuine sibling to act on. Using
+    // React to render both (rather than manually appending a plain DOM
+    // node next to the container) matters: `ReactDOMClient.createRoot`
+    // otherwise removes any non-React-managed children already present
+    // in its container on first commit.
+    function SiblingHarness({ open }: { open: boolean }) {
+      return (
+        <>
+          <div data-testid="app-shell-stub">App content</div>
+          <SceneEditorFlow open={open} location={LOCATION} onClose={() => {}} />
+        </>
+      )
+    }
+
+    const { rerender } = render(<SiblingHarness open />)
+    const sibling = screen.getByTestId('app-shell-stub')
+
+    expect(sibling).toHaveAttribute('inert')
+    expect(sibling).toHaveAttribute('aria-hidden', 'true')
+
+    rerender(<SiblingHarness open={false} />)
+    expect(sibling).not.toHaveAttribute('inert')
+    expect(sibling).not.toHaveAttribute('aria-hidden')
+  })
 })

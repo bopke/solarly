@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SceneTracing } from '../tracing'
 import type { TracedShape } from '../tracing'
 import { ConfigureShapes } from '../configure'
@@ -74,6 +74,41 @@ const DEFAULT_PANEL: PanelDimensions = {
 
 /** Matches `SystemConfigForm`'s own default for the equivalent field (`DEFAULT_VALUES.systemLossesPercent`). */
 const DEFAULT_SYSTEM_LOSSES_INPUT = '14'
+
+/**
+ * Elements a standard modal focus trap should treat as reachable via Tab
+ * (issue #93). `[tabindex]:not([tabindex="-1"])` covers the overlay's own
+ * `tabIndex={-1}` fallback focus target being correctly *excluded* (a
+ * programmatic-only focus target isn't part of the Tab sequence).
+ */
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ')
+
+/**
+ * Whether `element` sits inside a currently-hidden step panel (this
+ * component keeps every visited step's panel mounted at all times — see
+ * the component doc comment — with only `aria-hidden`/`data-visible`
+ * toggled) rather than one only invisible via CSS `visibility` that jsdom's
+ * layout-free test environment can't observe. Filtering on `aria-hidden`
+ * instead keeps the focus trap's notion of "reachable" correct under both
+ * a real browser and this project's jsdom-based component tests.
+ */
+function isReachable(element: HTMLElement): boolean {
+  return element.closest('[aria-hidden="true"]') === null
+}
+
+/** The Tab-reachable focusable elements currently inside `container`, in DOM order. */
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+  ).filter(isReachable)
+}
 
 /**
  * Mirrors `SystemConfigForm/validation.ts`'s `PLAIN_DECIMAL_PATTERN` —
@@ -208,6 +243,9 @@ export function SceneEditorFlow({
     () => new Set(),
   )
 
+  const overlayRef = useRef<HTMLDivElement | null>(null)
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null)
+
   const [tracedShapes, setTracedShapes] = useState<TracedShape[]>([])
   const [hasInvalidTracedShapes, setHasInvalidTracedShapes] = useState(false)
   const [shapeConfigs, setShapeConfigs] = useState<ShapeConfig[]>([])
@@ -340,14 +378,99 @@ export function SceneEditorFlow({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose])
 
+  /**
+   * Standard modal focus-trap pattern (issue #93): on open, remember
+   * whatever had focus (the "Design in 3D"/"Edit scene" button, in
+   * practice) so it can be restored on close, move focus into the dialog,
+   * mark the rest of the page `inert`/`aria-hidden` so a screen-reader or
+   * keyboard user can't reach `AppShell` behind it, and trap Tab/Shift+Tab
+   * within the dialog's currently-reachable focusable elements while it's
+   * open. No focus-trap library is a project dependency yet (checked
+   * `package.json`), and pulling one in for this one overlay would be
+   * scope creep for a polish pass — this hand-rolled version covers the
+   * same standard pattern.
+   *
+   * Runs once per open/close transition (dependency: just `open`) rather
+   * than re-running per render, and does its own DOM query for the
+   * currently-focusable elements at trap time (inside `handleTabKey`)
+   * rather than once up front, since which elements are reachable changes
+   * as the user navigates between steps while the overlay stays open.
+   */
+  useEffect(() => {
+    const overlayElement = overlayRef.current
+    if (!open || !overlayElement) return
+    // Reassigned to a non-null-typed local: TS doesn't otherwise carry the
+    // `!overlayElement` narrowing above into the nested `handleTabKey`
+    // function declaration below.
+    const overlay: HTMLDivElement = overlayElement
+
+    previouslyFocusedRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
+
+    const initialFocusTarget = getFocusableElements(overlay)[0] ?? overlay
+    initialFocusTarget.focus()
+
+    const siblings = overlay.parentElement
+      ? Array.from(overlay.parentElement.children).filter(
+          (child): child is HTMLElement =>
+            child !== overlay && child instanceof HTMLElement,
+        )
+      : []
+    for (const sibling of siblings) {
+      sibling.setAttribute('inert', '')
+      sibling.setAttribute('aria-hidden', 'true')
+    }
+
+    function handleTabKey(event: KeyboardEvent) {
+      if (event.key !== 'Tab') return
+      const focusable = getFocusableElements(overlay)
+      if (focusable.length === 0) {
+        event.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const isOutsideTrap = !overlay.contains(document.activeElement)
+      if (event.shiftKey) {
+        if (isOutsideTrap || document.activeElement === first) {
+          event.preventDefault()
+          last.focus()
+        }
+      } else if (isOutsideTrap || document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    overlay.addEventListener('keydown', handleTabKey)
+
+    return () => {
+      overlay.removeEventListener('keydown', handleTabKey)
+      for (const sibling of siblings) {
+        sibling.removeAttribute('inert')
+        sibling.removeAttribute('aria-hidden')
+      }
+      const previouslyFocused = previouslyFocusedRef.current
+      if (previouslyFocused && document.contains(previouslyFocused)) {
+        previouslyFocused.focus()
+      }
+    }
+  }, [open])
+
   return (
     <div
+      ref={overlayRef}
       className={styles.overlay}
       data-open={open}
       role="dialog"
       aria-modal="true"
       aria-label="Design in 3D"
       aria-hidden={!open}
+      // Fallback focus target (issue #93) for the unlikely case the
+      // dialog has no focusable descendant at all — never part of the Tab
+      // sequence itself, see `FOCUSABLE_SELECTOR`'s doc comment.
+      tabIndex={-1}
     >
       <div className={styles.header}>
         <ol className={styles.stepNav} aria-label="Steps">

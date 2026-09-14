@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Map as MapLibreMap, NavigationControl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import MapboxDraw from '@mapbox/mapbox-gl-draw'
@@ -197,6 +197,10 @@ export function SceneTracing({
   >({})
   const [nextKind, setNextKind] = useState<TracedShapeKind>('roof-face')
   const [satelliteNotice, setSatelliteNotice] = useState<string | null>(null)
+  // Unique per instance (issue #93) — a hardcoded `name` would make two
+  // `SceneTracing` instances on one page share native radio-group state,
+  // even though not currently the case anywhere in the app.
+  const nextShapeKindGroupName = useId()
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
@@ -249,6 +253,14 @@ export function SceneTracing({
     // ignored here (left for MapLibre's own console warning/error
     // logging), so a valid API key's satellite imagery isn't discarded
     // because of unrelated draw-layer noise.
+    //
+    // This `sourceId`-carrying-on-source-failure behavior isn't part of
+    // MapLibre's published `ErrorEvent` type (see `MapErrorEventLike`
+    // above) — it's observed runtime behavior, verified against the
+    // installed `maplibre-gl` (currently `^6.9.0`, see `package.json`).
+    // A future maplibre-gl bump that changes how/whether source errors
+    // are tagged would silently break this fallback path rather than fail
+    // loudly — nothing currently guards against that beyond this comment.
     let fellBack = !usingSatellite
     function handleMapError(event: MapErrorEventLike) {
       if (fellBack) return
@@ -397,7 +409,7 @@ export function SceneTracing({
           <label className={styles.kindOption}>
             <input
               type="radio"
-              name="next-shape-kind"
+              name={nextShapeKindGroupName}
               value="roof-face"
               checked={nextKind === 'roof-face'}
               onChange={() => setNextKind('roof-face')}
@@ -407,7 +419,7 @@ export function SceneTracing({
           <label className={styles.kindOption}>
             <input
               type="radio"
-              name="next-shape-kind"
+              name={nextShapeKindGroupName}
               value="ground-array"
               checked={nextKind === 'ground-array'}
               onChange={() => setNextKind('ground-array')}

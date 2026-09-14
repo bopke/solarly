@@ -593,10 +593,11 @@ function obstacleHit(
  *   `poaIrradiance` (a public per-hour entry point that guards its inputs),
  *   `isPanelOccluded` and its primitives are internal geometric building
  *   blocks called from inside a per-panel, per-hour inner loop — not a
- *   public API boundary a caller reaches directly with raw external data.
- *   Validating here would duplicate a check that belongs once, at the call
- *   site that derives `sunDirection` from altitude/azimuth, not repeated on
- *   every obstacle test. A malformed direction (NaN/zero/non-unit) fails
+ *   boundary reached with raw external data, even though `isPanelOccluded`
+ *   itself is re-exported from `index.ts`. Validating here would duplicate
+ *   a check that belongs once, at the call site that derives
+ *   `sunDirection` from altitude/azimuth, not repeated on every obstacle
+ *   test. A malformed direction (NaN/zero/non-unit) fails
  *   open — it yields no shading rather than throwing — which is verified
  *   behavior, not an assumption.
  * @param obstacles Candidate shadow-casters (shapes and/or obstructions),
