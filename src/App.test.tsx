@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NasaPowerNoDataError } from './data-sources'
 import type {
   HourlyPoint,
@@ -253,6 +253,21 @@ function clickUpdate() {
 describe('App', () => {
   beforeEach(() => {
     sceneFlowMounts.length = 0
+    // `handleLocationChange` (issue #87) prompts via the native `confirm()`
+    // before discarding an in-progress scene on a genuine location change.
+    // jsdom doesn't implement `confirm()` (calling it throws), so stub it
+    // here — defaulting to "confirmed" keeps every pre-existing test in
+    // this file (which don't care about the prompt itself) behaving as
+    // before. The "location change safety" describe block below overrides
+    // this per-test to exercise both outcomes.
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('renders the Solarly heading', () => {
@@ -542,6 +557,84 @@ describe('App', () => {
 
         // Only one mount so far, from the initial location being set.
         expect(sceneFlowMounts).toHaveLength(1)
+      })
+    })
+
+    describe('location-change safety guards (issue #87)', () => {
+      it('does not reset the scene for a near-identical lat/lon re-pick (pin jitter/re-geocoding noise)', () => {
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        // A tiny nudge — well under the threshold — e.g. re-geocoding the
+        // same address or a sub-meter pin drag.
+        setLocationViaMapClick(48.85661, 2.35221)
+
+        expect(sceneFlowMounts).toHaveLength(1)
+        expect(window.confirm).not.toHaveBeenCalled()
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Edit scene' }),
+        ).toBeInTheDocument()
+      })
+
+      it('prompts for confirmation before resetting an in-progress scene on a genuine location change, and keeps the scene if the user cancels', () => {
+        vi.stubGlobal(
+          'confirm',
+          vi.fn(() => false),
+        )
+
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        // A genuinely different location (Paris -> Rome).
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        expect(window.confirm).toHaveBeenCalledTimes(1)
+        // Cancelled: the scene survives untouched.
+        expect(sceneFlowMounts).toHaveLength(1)
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Edit scene' }),
+        ).toBeInTheDocument()
+      })
+
+      it('resets the scene on a genuine location change once the user confirms', () => {
+        vi.stubGlobal(
+          'confirm',
+          vi.fn(() => true),
+        )
+
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        expect(window.confirm).toHaveBeenCalledTimes(1)
+        expect(sceneFlowMounts).toHaveLength(2)
+        expect(
+          screen.queryByTestId('scene-editor-flow'),
+        ).not.toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Design in 3D' }),
+        ).toBeInTheDocument()
+      })
+
+      it('does not prompt for a genuine location change when no scene is in progress', () => {
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        expect(window.confirm).not.toHaveBeenCalled()
       })
     })
   })
