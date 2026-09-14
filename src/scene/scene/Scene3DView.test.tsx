@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import * as THREE from 'three'
 
 // R3F/WebGL needs a real GPU canvas, which jsdom doesn't provide — mirroring
 // this project's existing MapLibre-in-tests pattern
@@ -98,11 +99,17 @@ vi.mock('@react-three/fiber', () => ({
 vi.mock('@react-three/drei', () => ({
   OrbitControls: () => <div data-testid="orbit-controls" />,
   Text: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  Billboard: ({
+    children,
+    ...rest
+  }: {
+    children?: React.ReactNode
+  } & Record<string, unknown>) => <group {...rest}>{children}</group>,
 }))
 
 // Imported after the mocks above so the mocked modules are in place.
 import { Scene3DView } from './Scene3DView'
-import { polygonToExtrusionGeometry } from '../derive'
+import { panelAutoFillGrid, polygonToExtrusionGeometry } from '../derive'
 
 const flatSquare = (latOffset: number, lonOffset: number, sizeDeg = 0.0005) => [
   { lat: 52.5 + latOffset, lon: 13.4 + lonOffset },
@@ -225,17 +232,53 @@ describe('Scene3DView', () => {
   })
 
   it('lets a shape override the panel preset used for its own auto-fill', () => {
+    // A weak `toBeGreaterThanOrEqual(1)` assertion here would still pass
+    // even if the override were silently ignored (issue #85 item 6) — the
+    // shape's own oversized `panel` (2m x 1m, versus the 1.134m x 1.722m
+    // default) fits a different, exactly-computable panel count on this
+    // footprint, so asserting the *layout actually used* is what proves
+    // the override took effect.
+    const shapeGeometry = polygonToExtrusionGeometry(
+      flatSquare(0, 0, 0.001),
+      20,
+      180,
+    )
+    const overridePanel = { widthMm: 2000, heightMm: 1000 }
     const shapes = [
       {
         id: 'a',
-        geometry: polygonToExtrusionGeometry(flatSquare(0, 0, 0.001), 20, 180),
-        panel: { widthMm: 2000, heightMm: 1000 },
+        geometry: shapeGeometry,
+        panel: overridePanel,
       },
     ]
+    const onPanelLayoutChange = vi.fn()
     const { container } = render(
-      <Scene3DView shapes={shapes} defaultPanel={genericResidentialPanel} />,
+      <Scene3DView
+        shapes={shapes}
+        defaultPanel={genericResidentialPanel}
+        onPanelLayoutChange={onPanelLayoutChange}
+      />,
     )
-    expect(container.querySelectorAll('mesh').length).toBeGreaterThanOrEqual(1)
+
+    const footprint = shapeGeometry.vertices.map((v) => ({ x: v.x, y: v.y }))
+    const expectedOverrideCount = panelAutoFillGrid(footprint, overridePanel)
+      .panels.length
+    const expectedDefaultCount = panelAutoFillGrid(
+      footprint,
+      genericResidentialPanel,
+    ).panels.length
+
+    // Sanity check that these two panel sizes actually produce a
+    // different count on this footprint — otherwise the assertion below
+    // wouldn't distinguish "override applied" from "override ignored".
+    expect(expectedOverrideCount).not.toBe(expectedDefaultCount)
+
+    const layouts = onPanelLayoutChange.mock.calls.at(-1)?.[0]
+    expect(layouts[0].panelCount).toBe(expectedOverrideCount)
+    // Plane mesh + panel mesh, plus the gizmo's fixed 2 meshes.
+    expect(container.querySelectorAll('mesh')).toHaveLength(
+      2 + GIZMO_MESH_COUNT + GROUND_PLANE_MESH_COUNT + GROUND_SHADOW_MESH_COUNT,
+    )
   })
 })
 
@@ -493,6 +536,53 @@ describe('Scene3DView obstructions', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('rejects a property-panel move that would land an obstruction under a shape, mirroring the click-placement guard (issue #86 item 1)', () => {
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const ground = container.querySelector('mesh[name="ground-plane"]')
+    clickGround(ground as Element, OUTSIDE_FOOTPRINT.x, OUTSIDE_FOOTPRINT.y)
+
+    const xInput = screen.getByLabelText(/position east/i)
+    const yInput = screen.getByLabelText(/position north/i)
+
+    // x alone (3, 60) is still outside the shape's footprint, so this
+    // move is legitimate and should go through...
+    fireEvent.change(xInput, { target: { value: '3' } })
+    expect(xInput).toHaveValue(3)
+
+    // ...but (3, 4) — the same point `obstructionPlacement.test.ts` and
+    // the earlier "does not place an obstruction under a tilted roof"
+    // test use as a click genuinely inside the footprint — must be
+    // rejected here too, not just for a fresh click-to-place.
+    fireEvent.change(yInput, { target: { value: '4' } })
+    expect(yInput).toHaveValue(60)
+    expect(
+      screen.getByText(/can.t place an obstruction inside a traced shape/i),
+    ).toBeInTheDocument()
+  })
+
+  it('auto-dismisses the placement-blocked cue after a few seconds instead of persisting indefinitely (issue #94 item 3)', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<Scene3DView shapes={shapes} />)
+      const ground = container.querySelector('mesh[name="ground-plane"]')
+
+      clickGround(ground as Element, 3, 4)
+      expect(
+        screen.getByText(/can.t place an obstruction inside a traced shape/i),
+      ).toBeInTheDocument()
+
+      act(() => {
+        vi.advanceTimersByTime(3000)
+      })
+
+      expect(
+        screen.queryByText(/can.t place an obstruction inside a traced shape/i),
+      ).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('starts with the given controlled obstructions rendered, with no ground click needed', () => {
     const initial = [
       {
@@ -509,5 +599,77 @@ describe('Scene3DView obstructions', () => {
     expect(
       container.querySelector('[name="obstruction-tree-fixed-1"]'),
     ).not.toBeNull()
+  })
+})
+
+describe('Scene3DView gridHelper centering (issue #85 item 3)', () => {
+  it('centers the gridHelper on the scene bounds, not on the first shape’s own centroid', () => {
+    // Two shapes offset from each other: the first shape's own centroid
+    // (`sceneOrigin`, the shared frame's arbitrary reference point) sits
+    // at local (0, 0), but the scene's actual bounds center — with a
+    // second shape offset roughly 0.01deg (~1.1km) north — is nowhere
+    // near (0, 0). Before the fix, `gridHelper` rendered with no explicit
+    // `position` at all (i.e. pinned to (0, 0, 0), `sceneOrigin`).
+    const shapes = [
+      {
+        id: 'a',
+        geometry: polygonToExtrusionGeometry(flatSquare(0, 0), 20, 180),
+      },
+      {
+        id: 'b',
+        geometry: polygonToExtrusionGeometry(flatSquare(0.01, 0), 20, 180),
+      },
+    ]
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const grid = container.querySelector('gridhelper')
+    expect(grid).not.toBeNull()
+    const [x, y] = (grid?.getAttribute('position') ?? '').split(',').map(Number)
+    // Not pinned at the origin (that would be the pre-fix, first-shape-
+    // centroid behavior)...
+    expect(x !== 0 || y !== 0).toBe(true)
+    // ...and specifically offset toward the second, northward shape (a
+    // positive y — north — shift), not some unrelated value.
+    expect(y).toBeGreaterThan(0)
+  })
+})
+
+describe('Scene3DView BufferGeometry disposal (issue #85 item 2)', () => {
+  it('disposes a shape’s plane/panel geometry when its inputs change and on unmount', () => {
+    const disposeSpy = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose')
+    disposeSpy.mockClear()
+
+    const shapes = [
+      {
+        id: 'a',
+        geometry: polygonToExtrusionGeometry(flatSquare(0, 0, 0.001), 20, 180),
+      },
+    ]
+    const { rerender, unmount } = render(
+      <Scene3DView shapes={shapes} defaultPanel={genericResidentialPanel} />,
+    )
+    expect(disposeSpy).not.toHaveBeenCalled()
+
+    // Re-deriving geometry for a changed tilt must dispose the geometry
+    // it's replacing, not just drop the JS reference and leak the GPU
+    // buffers.
+    const retiltedShapes = [
+      {
+        id: 'a',
+        geometry: polygonToExtrusionGeometry(flatSquare(0, 0, 0.001), 35, 180),
+      },
+    ]
+    rerender(
+      <Scene3DView
+        shapes={retiltedShapes}
+        defaultPanel={genericResidentialPanel}
+      />,
+    )
+    expect(disposeSpy).toHaveBeenCalled()
+    const callsAfterRetilt = disposeSpy.mock.calls.length
+
+    unmount()
+    expect(disposeSpy.mock.calls.length).toBeGreaterThan(callsAfterRetilt)
+
+    disposeSpy.mockRestore()
   })
 })

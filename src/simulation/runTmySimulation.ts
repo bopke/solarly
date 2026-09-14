@@ -262,7 +262,7 @@ function simulateMonth(
   systemConfig: SystemConfig,
   normal: MonthlyClimateNormal,
   referenceYear: number,
-  sceneGeometry: SceneGeometry | undefined,
+  arrayScenePanels: Map<PanelArrayConfig, ArrayScenePanels>,
 ): MonthlySimulation {
   const day = REPRESENTATIVE_DAY_OF_MONTH
   const monthDaysInMonth = daysInMonth(referenceYear, normal.month)
@@ -306,20 +306,6 @@ function simulateMonth(
     (sum, array) => sum + array.panelCount,
     0,
   )
-
-  // Precomputed once per month (rather than recomputed every hour): each
-  // array's real scene panels + obstacle list, keyed by array object
-  // identity, or `undefined` for an array that should keep using the
-  // pre-M3 `manualShadingPercent` shortcut (see `resolveArrayScenePanels`'s
-  // doc comment for exactly which arrays fall back). Neither a shape's
-  // vertices nor an obstruction's geometry change hour-to-hour, only the
-  // sun direction does, so this is invariant across `clearSkyHourly.map`
-  // below.
-  const arrayScenePanels = new Map<PanelArrayConfig, ArrayScenePanels>()
-  for (const array of systemConfig.arrays) {
-    const resolved = resolveArrayScenePanels(array, sceneGeometry)
-    if (resolved) arrayScenePanels.set(array, resolved)
-  }
 
   const representativeDayHourly: HourlyPoint[] = clearSkyHourly.map((h) => {
     const estimatedGhiWm2 = h.ghiWm2 * clearnessFactor
@@ -417,6 +403,20 @@ export function buildTmySimulationResult(
   referenceYear: number = REFERENCE_YEAR,
   sceneGeometry?: SceneGeometry,
 ): TmySimulationResult {
+  // Precomputed once for the whole run (issue #94 item 4), not once per
+  // month: each array's real scene panels + obstacle list, keyed by array
+  // object identity, or omitted for an array that should keep using the
+  // pre-M3 `manualShadingPercent` shortcut (see `resolveArrayScenePanels`'s
+  // doc comment for exactly which arrays fall back). Neither a shape's
+  // vertices nor an obstruction's geometry change month-to-month (only the
+  // sun direction does), so recomputing this per month in `simulateMonth`
+  // was pure repeated work with no different result each time.
+  const arrayScenePanels = new Map<PanelArrayConfig, ArrayScenePanels>()
+  for (const array of systemConfig.arrays) {
+    const resolved = resolveArrayScenePanels(array, sceneGeometry)
+    if (resolved) arrayScenePanels.set(array, resolved)
+  }
+
   const months = normals
     .map((normal) =>
       simulateMonth(
@@ -424,7 +424,7 @@ export function buildTmySimulationResult(
         systemConfig,
         normal,
         referenceYear,
-        sceneGeometry,
+        arrayScenePanels,
       ),
     )
     .sort((a, b) => a.month - b.month)

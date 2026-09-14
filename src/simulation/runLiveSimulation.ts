@@ -152,28 +152,6 @@ function requireFiniteInRange(
 }
 
 /**
- * Combines `systemLossesPercent` and `manualShadingPercent` into a single
- * aggregate loss percentage for `panelPowerOutput`'s/
- * `computeArrayPowerWithOcclusion`'s `lossesPercent`, by stacking their
- * retention factors multiplicatively — the same combined-derate math the
- * non-occlusion path below already applies (there, spread across
- * `panelPowerOutput`'s own `systemLossesPercent` handling plus a separate
- * `manualShadingFactor` multiplication; here, folded into one number since
- * `computeArrayPowerWithOcclusion` takes a single `lossesPercent` per
- * panel, matching `runTmySimulation.ts`'s identically-named helper). See
- * ADR 0016 for why manual shading stacks as an independent derate rather
- * than being summed with system losses.
- */
-function combinedLossesPercent(
-  systemLossesPercent: number,
-  manualShadingPercent: number,
-): number {
-  const retention =
-    (1 - systemLossesPercent / 100) * (1 - manualShadingPercent / 100)
-  return (1 - retention) * 100
-}
-
-/**
  * Computes hourly panel power output for Live forecast mode: fetches an
  * Open-Meteo hourly forecast for `input.location` and runs each hour's GHI
  * + temperature through the `solar-physics` pipeline
@@ -261,7 +239,13 @@ function hourlyPowerPoint(
         },
         decomposed,
         entry.temperatureC,
-        combinedLossesPercent(systemConfig.systemLossesPercent, 0),
+        // A geometry-resolved array replaces `manualShadingPercent` with
+        // the real computed occlusion rather than stacking both (see the
+        // comment above), so the combined loss is just
+        // `systemLossesPercent` on its own here — folding it through the
+        // old `combinedLossesPercent(systemLossesPercent, 0)` call was a
+        // no-op (issue #94 item 5).
+        systemConfig.systemLossesPercent,
       )
       return sum + Math.max(powerW, 0)
     }

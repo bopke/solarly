@@ -78,6 +78,22 @@ export function intersectGroundPlane(ray: Ray3): Point2D | null {
  * the same scene-local meters frame as `point` (i.e. each shape's own
  * vertices already translated by its `offsetToSceneOrigin` offset — see
  * `Scene3DView`'s `shapeFootprints`).
+ *
+ * ## Known limitation: a residual gap just outside a footprint (issue #86)
+ *
+ * This guard only rejects points genuinely *inside* a footprint — it does
+ * not, and is not intended to, correct the original raycast-ordering quirk
+ * described above for a click that lands just past a shape's edge. In
+ * practice a roof click can still resolve to a ground point measured
+ * 0.01-4.6m (median ~1.65m, per the #86 investigation) beyond the shape's
+ * true edge, because that resolved point is still coming from the same
+ * ground-plane raycast rather than the roof surface itself. This never
+ * reinstates the original bug (nothing lands *under* a shape — that's
+ * exactly what this guard prevents), it's just imprecise near an edge.
+ * Tightening this further would need placement to resolve against the
+ * roof's own tilted surface (not the flat ground plane) near a shape's
+ * boundary — out of scope for this plan-view guard, which only needs to
+ * catch the "under the roof" case, not every near-edge case.
  */
 export function isInsideAnyFootprint(
   point: Point2D,

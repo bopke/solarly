@@ -74,6 +74,22 @@ function distance(a: Point2D, b: Point2D): number {
   return Math.hypot(b.x - a.x, b.y - a.y)
 }
 
+/**
+ * Canonicalizes `-0` to `0` (issue #94 item 1). A due-north suggestion
+ * (0deg) in the southern hemisphere can compute as `-0` — e.g. via
+ * `Math.atan2` on a direction vector with a `-0` component — which
+ * survives `normalizeDegrees` unchanged, since `-0 % 360 === -0` and
+ * `-0 < 0` is `false`. Cosmetically identical (`String(-0)` prints `"0"`),
+ * but `Object.is(-0, 0)` is `false`, which could surprise a future
+ * snapshot test or a memoization key derived from this value. Every
+ * `return` in `suggestAzimuth` below is wrapped with this rather than
+ * fixing it inside `normalizeDegrees` itself, keeping the change scoped to
+ * this module per issue #94.
+ */
+function withoutNegativeZero(deg: number): number {
+  return deg === 0 ? 0 : deg
+}
+
 /** Smallest angle (0-180) between two compass bearings. */
 function angularDistanceDeg(a: number, b: number): number {
   const diff = Math.abs(normalizeDegrees(a) - normalizeDegrees(b)) % 360
@@ -133,7 +149,7 @@ export function suggestAzimuth(polygon: LatLon[]): number {
   const distA = angularDistanceDeg(bearingA, equatorFacingBearing)
   const distB = angularDistanceDeg(bearingB, equatorFacingBearing)
   if (distA !== distB) {
-    return distA < distB ? bearingA : bearingB
+    return withoutNegativeZero(distA < distB ? bearingA : bearingB)
   }
 
   // 2. Extent-based fallback (exactly east/west-facing ridge only) — pick
@@ -160,11 +176,13 @@ export function suggestAzimuth(polygon: LatLon[]): number {
   // last bit or two and make the pick depend on trace order again.
   const extentEpsilon = 1e-6 * Math.max(1, Math.abs(extentA), Math.abs(extentB))
   if (Math.abs(extentA - extentB) > extentEpsilon) {
-    return extentA > extentB ? bearingA : bearingB
+    return withoutNegativeZero(extentA > extentB ? bearingA : bearingB)
   }
 
   // 3. Fixed final tiebreak (exact bilateral symmetry) — see module doc.
-  return angularDistanceDeg(bearingA, 90) <= angularDistanceDeg(bearingB, 90)
-    ? bearingA
-    : bearingB
+  return withoutNegativeZero(
+    angularDistanceDeg(bearingA, 90) <= angularDistanceDeg(bearingB, 90)
+      ? bearingA
+      : bearingB,
+  )
 }

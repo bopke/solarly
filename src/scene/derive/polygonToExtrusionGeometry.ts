@@ -73,7 +73,7 @@
  * M3).
  */
 
-import type { LatLon, Point2D } from './geo'
+import type { LatLon } from './geo'
 import { polygonAreaM2, projectPolygonToLocalMeters } from './geo'
 
 /** A point in 3D local meters: x = east, y = north, z = up. */
@@ -177,7 +177,3 @@ export function polygonToExtrusionGeometry(
     azimuthDeg,
   }
 }
-
-// Re-exported for convenience so consumers of this module don't also need
-// to import `Point2D` from `./geo` just to type intermediate values.
-export type { Point2D }

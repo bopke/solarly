@@ -9,7 +9,7 @@ import {
   translateVertices,
 } from './geometryBuilders'
 import { polygonToExtrusionGeometry } from '../derive'
-import type { PanelPlacement } from '../derive'
+import type { PanelPlacement, Vec3 } from '../derive'
 
 describe('buildPlaneGeometry', () => {
   it('builds a geometry with one vertex per input point and a triangulated index', () => {
@@ -105,6 +105,27 @@ describe('buildPanelsGeometry', () => {
     expect(buffer.getIndex()?.count).toBe(36 * panels.length)
   })
 
+  it('produces 8 vertices and 12 triangles (36 indices) per panel at a non-zero tilt too (issue #85 item 6)', () => {
+    // The vertex/index counts are tilt-independent, but this was
+    // previously only ever exercised at `tiltDeg: 0` — the exact case
+    // that let the panel/roof z-fighting bug through undetected (see the
+    // dedicated regression test below).
+    const tiltDeg = 28
+    const azimuthDeg = 95
+    const tiltRad = (tiltDeg * Math.PI) / 180
+    const azimuthRad = (azimuthDeg * Math.PI) / 180
+    const slope = { x: Math.sin(azimuthRad), y: Math.cos(azimuthRad) }
+    const normal = {
+      x: Math.sin(tiltRad) * slope.x,
+      y: Math.sin(tiltRad) * slope.y,
+      z: Math.cos(tiltRad),
+    }
+    const panels = [makePanel(0, 0, 1, -1), makePanel(0, 1, 3, -1)]
+    const buffer = buildPanelsGeometry(panels, tiltDeg, azimuthDeg, normal)
+    expect(buffer.getAttribute('position').count).toBe(8 * panels.length)
+    expect(buffer.getIndex()?.count).toBe(36 * panels.length)
+  })
+
   it('returns an empty geometry for zero panels', () => {
     const buffer = buildPanelsGeometry([], 10, 180, { x: 0, y: 0, z: 1 })
     expect(buffer.getAttribute('position').count).toBe(0)
@@ -189,6 +210,70 @@ describe('buildPanelsGeometry', () => {
   })
 })
 
+describe('panel on-slope oversizing (issue #85 item 1, known & documented limitation)', () => {
+  it('renders a panel measurably larger on-slope than its true physical size at a real tilt', () => {
+    // Mirrors the issue's own measured example: a generic residential
+    // panel (1.134m x 1.722m) on a 35deg-tilted, south-facing plane.
+    // `panelAutoFillGrid`/`buildPanelsGeometry`'s module docs explain why
+    // this is a deliberately deferred limitation rather than a bug fixed
+    // here — this test exists to keep the *magnitude* pinned down rather
+    // than let it silently drift, and to prove the limitation is real
+    // (not just a hypothetical worst case).
+    const tiltDeg = 35
+    const azimuthDeg = 180
+    const physicalWidthM = 1.134
+    const physicalHeightM = 1.722
+    const tiltRad = (tiltDeg * Math.PI) / 180
+    const azimuthRad = (azimuthDeg * Math.PI) / 180
+    const slope = { x: Math.sin(azimuthRad), y: Math.cos(azimuthRad) }
+    const normal = {
+      x: Math.sin(tiltRad) * slope.x,
+      y: Math.sin(tiltRad) * slope.y,
+      z: Math.cos(tiltRad),
+    }
+
+    const panel: PanelPlacement = {
+      row: 0,
+      col: 0,
+      center: { x: 0, y: 0 },
+      corners: [
+        { x: -physicalWidthM / 2, y: -physicalHeightM / 2 },
+        { x: physicalWidthM / 2, y: -physicalHeightM / 2 },
+        { x: physicalWidthM / 2, y: physicalHeightM / 2 },
+        { x: -physicalWidthM / 2, y: physicalHeightM / 2 },
+      ],
+    }
+
+    const buffer = buildPanelsGeometry([panel], tiltDeg, azimuthDeg, normal)
+    const position = buffer.getAttribute('position')
+    // Bottom-face corners (indices 4-7) sit on the tilted roof plane —
+    // see `buildPanelsGeometry`'s doc for the top(0-3)/bottom(4-7) layout.
+    const corner = (i: number) => ({
+      x: position.getX(i),
+      y: position.getY(i),
+      z: position.getZ(i),
+    })
+    const distance3D = (a: Vec3, b: Vec3) =>
+      Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+
+    // Edge from bottom-corner 4 (min x, min y) to bottom-corner 7 (min x,
+    // max y) is the slope-parallel (north-south, matching azimuth 180)
+    // edge — the one foreshortening/lifting distorts.
+    const renderedHeightM = distance3D(corner(4), corner(7))
+    // The cross-slope edge (4 -> 5) is unaffected by tilt.
+    const renderedWidthM = distance3D(corner(4), corner(5))
+
+    expect(renderedWidthM).toBeCloseTo(physicalWidthM, 6)
+    expect(renderedHeightM).toBeGreaterThan(physicalHeightM)
+    // Pin the known ~22% (issue #85's measured figure) magnitude down
+    // rather than any regression: currently way oversized, not roughly
+    // correct.
+    const oversizeRatio = renderedHeightM / physicalHeightM
+    expect(oversizeRatio).toBeGreaterThan(1.1)
+    expect(oversizeRatio).toBeLessThan(1.3)
+  })
+})
+
 describe('computeBounds / mergeBounds', () => {
   it('computes min/max over a set of points', () => {
     const bounds = computeBounds([
@@ -227,7 +312,18 @@ describe('offsetToSceneOrigin / translateVertices', () => {
     const sceneOrigin = { lat: 52.5, lon: 13.4 }
     const shapeOrigin = { lat: 52.5, lon: 13.401 }
     const offset = offsetToSceneOrigin(shapeOrigin, sceneOrigin)
-    expect(offset.x).toBeGreaterThan(0)
+    // A bare `offset.x > 0` assertion would still pass even if the
+    // `cos(lat)` meridian-convergence factor were accidentally dropped
+    // (issue #85 item 6) — it would just make `offset.x` too large, not
+    // negative. Assert the actual expected magnitude instead, computed
+    // independently here (not by re-deriving it via `offsetToSceneOrigin`
+    // or `toLocalMeters` itself, which would make this tautological).
+    const EARTH_RADIUS_M = 6371000
+    const expectedX =
+      ((0.001 * Math.PI) / 180) *
+      Math.cos((52.5 * Math.PI) / 180) *
+      EARTH_RADIUS_M
+    expect(offset.x).toBeCloseTo(expectedX, 3)
     expect(offset.y).toBeCloseTo(0, 6)
   })
 

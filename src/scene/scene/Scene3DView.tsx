@@ -165,6 +165,23 @@ function ShapeMesh({
     [panels, geometry.tiltDeg, geometry.azimuthDeg, geometry.normal],
   )
 
+  // Dispose the GPU buffers backing each `useMemo`'d `BufferGeometry`
+  // (issue #85 item 2). Without this, every tilt/azimuth/panel-layout edit
+  // that recomputes `planeGeometry`/`panelsGeometry` (or unmounting this
+  // shape entirely) leaks the previous geometry's GPU-side buffers —
+  // `useMemo` alone only ever replaces the JS reference, it never calls
+  // `.dispose()` on what it's replacing. The cleanup fires both when the
+  // memoized geometry changes (disposing the one being replaced) and on
+  // unmount (disposing the last one), which is exactly when it's safe to
+  // free — nothing else in this component keeps a reference to it.
+  useEffect(() => {
+    return () => planeGeometry.dispose()
+  }, [planeGeometry])
+
+  useEffect(() => {
+    return () => panelsGeometry?.dispose()
+  }, [panelsGeometry])
+
   return (
     <group position={[offset.x, offset.y, 0]}>
       {/*
@@ -286,11 +303,36 @@ export function Scene3DView({
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingKind, setPendingKind] = useState<ObstructionKind>('tree')
-  // Brief inline cue shown when a ground click resolves to a point inside
-  // a shape's own footprint (issue #58 PR #69 review) — placement is
+  // Brief inline cue shown when a placement/move attempt resolves to a
+  // point inside a shape's own footprint (issue #58 PR #69 review, and
+  // issue #86 item 1 — the same guard now also applies to the property
+  // panel's numeric X/Y fields, not just ground clicks). Placement is
   // silently rejected in that case, but the cue tells the user why
-  // nothing happened rather than leaving the click feeling ignored.
+  // nothing happened rather than leaving the interaction feeling ignored.
+  // Auto-dismisses after `PLACEMENT_BLOCKED_TIMEOUT_MS` (issue #94 item 3)
+  // rather than persisting until the next successful placement, so it's
+  // actually "brief" as this comment (and the CSS class name) claims.
   const [placementBlocked, setPlacementBlocked] = useState(false)
+  // Bumped on every block so the effect below restarts its timer even if
+  // `placementBlocked` was already `true` (e.g. two blocked attempts in a
+  // row) — a plain boolean dependency wouldn't re-trigger the effect on a
+  // `true` -> `true` transition.
+  const [placementBlockedToken, setPlacementBlockedToken] = useState(0)
+
+  function blockPlacement() {
+    setPlacementBlocked(true)
+    setPlacementBlockedToken((token) => token + 1)
+  }
+
+  const PLACEMENT_BLOCKED_TIMEOUT_MS = 3000
+  useEffect(() => {
+    if (!placementBlocked) return
+    const timer = setTimeout(
+      () => setPlacementBlocked(false),
+      PLACEMENT_BLOCKED_TIMEOUT_MS,
+    )
+    return () => clearTimeout(timer)
+  }, [placementBlocked, placementBlockedToken])
 
   function commitObstructions(next: Obstruction[]) {
     if (!isControlled) setInternalObstructions(next)
@@ -303,7 +345,7 @@ export function Scene3DView({
       // footprint (e.g. the downslope half of a tilted roof, which
       // straddles z = 0 — see `isInsideAnyFootprint`'s doc). Reject the
       // placement rather than dropping an obstruction inside the shape.
-      setPlacementBlocked(true)
+      blockPlacement()
       return
     }
     setPlacementBlocked(false)
@@ -339,10 +381,32 @@ export function Scene3DView({
   function handleUpdate(
     id: string,
     patch: Partial<Pick<Obstruction, 'position' | 'heightM' | 'radiusM'>>,
-  ) {
+  ): boolean {
+    // Issue #86 item 1: the property panel's numeric X/Y fields used to
+    // bypass the footprint-containment invariant that click-placement
+    // (`handlePlace`, above) already enforces — typing e.g. 0/0 could move
+    // an obstruction squarely under a traced shape's roof. There's no
+    // legitimate case in this app for an obstruction to sit under a roof
+    // (M3's occlusion model doesn't reason about an obstruction embedded
+    // inside a shape), so this applies the exact same
+    // `isInsideAnyFootprint` guard here rather than scoping the invariant
+    // as click-placement-only. Only the `position` field is checked/
+    // rejected; a `heightM`/`radiusM` edit on an obstruction already
+    // (legitimately) placed is unaffected. Returns whether the update was
+    // applied so `ObstructionPropertyPanel`'s numeric fields can revert
+    // their displayed text on rejection instead of silently disagreeing
+    // with the (unchanged) real obstruction state.
+    if (
+      patch.position &&
+      isInsideAnyFootprint(patch.position, shapeFootprints)
+    ) {
+      blockPlacement()
+      return false
+    }
     commitObstructions(
       obstructions.map((o) => (o.id === id ? { ...o, ...patch } : o)),
     )
+    return true
   }
 
   function handleDelete(id: string) {
@@ -723,9 +787,25 @@ export function Scene3DView({
           position={gizmoPosition}
           size={Math.max(gridSize * 0.08, 1)}
         />
+        {/*
+          Centered on the scene's *bounds* center (`sceneCenter` — the
+          midpoint of `bounds`, which already merges every shape's extent,
+          see the `useMemo` above), not on `sceneOrigin` (issue #85 item 3):
+          `sceneOrigin` is just the first shape's own centroid, an arbitrary
+          reference point for the shared local-meters frame (see
+          `sceneOrigin`'s doc comment above), not necessarily anywhere near
+          the middle of the rendered scene once there's more than one
+          shape. Leaving `position`'s default (0,0,0) — i.e. `sceneOrigin`
+          — visibly off-centered the grid from the shapes it's meant to
+          ground. `z` is pinned to 0 (ground level) rather than
+          `sceneCenter.z`, which would drift with shapes at different
+          elevations/tilts — the grid is a ground reference, not a
+          mid-height one.
+        */}
         <gridHelper
           args={[gridSize, Math.max(1, Math.round(gridSize / 2))]}
           rotation={[Math.PI / 2, 0, 0]}
+          position={[sceneCenter.x, sceneCenter.y, 0]}
         />
         {/*
           Invisible ground-plane mesh purely to receive click events —
