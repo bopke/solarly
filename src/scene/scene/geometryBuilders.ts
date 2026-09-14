@@ -98,6 +98,15 @@ export function liftToPlane(
  * causes z-fighting against the roof mesh underneath — see the PR #68
  * review for the render artifact this produced before the fix).
  */
+/**
+ * Known limitation: on-slope oversizing (issue #85). `liftToPlane` only
+ * ever changes a corner's `z`, never its `(x, y)` — so a panel's rendered
+ * on-slope size ends up larger than its true physical size on a tilted
+ * plane, compounding the plan-view oversizing already documented in
+ * `panelAutoFillGrid.ts`'s module doc (see that doc's "Known limitation"
+ * section for the measured ~22% example and why a general fix is deferred
+ * rather than attempted here).
+ */
 export function buildPanelsGeometry(
   panels: PanelPlacement[],
   tiltDeg: number,

@@ -1,4 +1,4 @@
-import { Text } from '@react-three/drei'
+import { Billboard, Text } from '@react-three/drei'
 
 /**
  * Simple custom north-arrow gizmo: a cone-tipped arrow pointing toward
@@ -12,6 +12,14 @@ import { Text } from '@react-three/drei'
  * scene-anchored compass arrow, which is what the M2 spec and issue #57
  * ask for ("orientation" relative to true north, not a generic axis
  * helper).
+ *
+ * The "N" label is wrapped in drei's `<Billboard>` (issue #85 item 5):
+ * without it, a plain `<Text>` lies flat in this z-up scene (its own local
+ * plane, facing `+z` by default), so it's only readable from close to
+ * directly overhead — for any other camera angle (the app's default orbit
+ * position included) it appears edge-on or upside-down. `<Billboard>`
+ * continuously rotates its children to face the active camera, so the
+ * label stays legible from wherever the user has orbited to.
  */
 export function NorthArrowGizmo({
   position = [0, 0, 0],
@@ -34,15 +42,16 @@ export function NorthArrowGizmo({
         <coneGeometry args={[size * 0.09, headHeight, 12]} />
         <meshStandardMaterial color="#c0392b" />
       </mesh>
-      <Text
-        position={[0, size * 1.15, 0]}
-        fontSize={size * 0.25}
-        color="#c0392b"
-        anchorX="center"
-        anchorY="bottom"
-      >
-        N
-      </Text>
+      <Billboard position={[0, size * 1.15, 0]}>
+        <Text
+          fontSize={size * 0.25}
+          color="#c0392b"
+          anchorX="center"
+          anchorY="bottom"
+        >
+          N
+        </Text>
+      </Billboard>
     </group>
   )
 }

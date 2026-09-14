@@ -94,6 +94,65 @@ describe('ObstructionPropertyPanel', () => {
     expect(onChange).toHaveBeenCalledWith({ heightM: 0.5 })
   })
 
+  it('allows momentarily clearing a numeric field instead of snapping straight to the minimum (issue #86 item 3)', () => {
+    const onChange = vi.fn()
+    render(
+      <ObstructionPropertyPanel
+        obstruction={tree}
+        onChange={onChange}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const heightInput = screen.getByLabelText(/height/i)
+
+    fireEvent.change(heightInput, { target: { value: '' } })
+
+    // The field itself is allowed to sit empty...
+    expect(heightInput).toHaveValue(null)
+    // ...but nothing is committed yet — clearing it must not clamp
+    // straight to the minimum the way `Number('') === 0` used to.
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('reverts an emptied field back to its last committed value on blur', () => {
+    const onChange = vi.fn()
+    render(
+      <ObstructionPropertyPanel
+        obstruction={tree}
+        onChange={onChange}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const heightInput = screen.getByLabelText(/height/i)
+
+    fireEvent.change(heightInput, { target: { value: '' } })
+    fireEvent.blur(heightInput)
+
+    expect(heightInput).toHaveValue(tree.heightM)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('still commits a typed value normally after the field was momentarily emptied', () => {
+    const onChange = vi.fn()
+    render(
+      <ObstructionPropertyPanel
+        obstruction={tree}
+        onChange={onChange}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const heightInput = screen.getByLabelText(/height/i)
+
+    fireEvent.change(heightInput, { target: { value: '' } })
+    fireEvent.change(heightInput, { target: { value: '7' } })
+
+    expect(heightInput).toHaveValue(7)
+    expect(onChange).toHaveBeenCalledWith({ heightM: 7 })
+  })
+
   it('labels a building differently (footprint half-width rather than canopy radius)', () => {
     render(
       <ObstructionPropertyPanel

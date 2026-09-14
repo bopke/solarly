@@ -123,6 +123,24 @@ describe('suggestAzimuth', () => {
     expect(azimuth).toBeLessThan(360)
   })
 
+  it('never returns negative zero for a due-north suggestion in the southern hemisphere (issue #94 item 1)', () => {
+    // A wide (E-W) rectangle in the southern hemisphere suggests due
+    // north (0deg) — see the test above. `Object.is(-0, 0)` is `false`
+    // even though they're `===` and print identically, so a plain
+    // `toBe(0)` alone wouldn't catch a `-0` regression here.
+    const rectangle = [
+      { lat: -30.01, lon: -0.02 },
+      { lat: -30.01, lon: 0.02 },
+      { lat: -30.03, lon: 0.02 },
+      { lat: -30.03, lon: -0.02 },
+    ]
+    for (const polygon of allTracingOrders(rectangle)) {
+      const azimuth = suggestAzimuth(polygon)
+      expect(azimuth).toBe(0)
+      expect(Object.is(azimuth, -0)).toBe(false)
+    }
+  })
+
   it('is a pure function: repeated calls with the same input return the same result', () => {
     const polygon = [
       { lat: 51.5, lon: -0.13 },

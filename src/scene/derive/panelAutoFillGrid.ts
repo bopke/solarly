@@ -36,18 +36,41 @@
  * up each panel's 3D center this way without this module needing to know
  * about tilt/azimuth at all.
  *
- * What this function does NOT yet do: panel `widthMm`/`heightMm` are laid
- * out at their real, physical (on-slope) size in this plan-view grid, so
- * each panel's *plan-view footprint* is actually smaller than its grid
- * cell along the slope axis (by the same `cos(tiltDeg)` foreshortening
- * that affects the traced polygon itself) — meaning this grid is
- * conservative (fewer panels than would truly fit) rather than
- * over-fitting, but isn't yet computing the tighter, foreshortened
- * plan-view cell size that would fit the true maximum panel count.
- * Tracked as a follow-up for whichever of #57/#59 renders and composes
- * this with `polygonToExtrusionGeometry`; not fixed here to avoid
- * changing this function's already-tested row/col/center semantics on a
- * hunch.
+ * ## Known limitation: rendered panels are oversized on a tilted plane (issue #85)
+ *
+ * What this function does NOT do: panel `widthMm`/`heightMm` are laid out
+ * at their real, physical (on-slope) size in this plan-view grid, so each
+ * panel's *plan-view footprint* is actually smaller than its grid cell
+ * along the slope axis (by the same `cos(tiltDeg)` foreshortening that
+ * affects the traced polygon itself, per `polygonToExtrusionGeometry`'s
+ * module doc). This grid is therefore conservative in *packing* (fewer
+ * panels than would truly fit) — but the renderer
+ * (`geometryBuilders.ts`'s `buildPanelsGeometry`) takes each panel's plan
+ * `corners` and lifts them directly onto the tilted plane via
+ * `liftToPlane`, which changes each corner's `z` but not its `(x, y)` —
+ * so the *rendered* panel's on-slope size ends up *larger* than the panel's
+ * true physical size, not smaller, and by more than the plan-view error
+ * alone (lifting a plan-view rectangle onto a slope stretches it further,
+ * roughly by a `1 / cos(tiltDeg)`-ish factor along the slope axis, compounding
+ * the grid's own oversized plan cell). Measured example (PR #64/#68 review,
+ * tracked as issue #85 item 1): a 1.134m x 1.722m physical panel at 35°
+ * tilt rendered as roughly 1.222m x 1.985m on-slope — about 22% too big
+ * along the slope axis.
+ *
+ * A fully correct fix needs the true on-slope panel size to depend on the
+ * *cross-slope vs. up-slope* decomposition of each panel edge relative to
+ * the shape's `azimuthDeg` — nontrivial in general because this function's
+ * grid is deliberately axis-aligned in plan view (see above), not rotated
+ * to the slope direction, so an arbitrary azimuth mixes both grid axes into
+ * the slope direction unevenly. Given the real risk of a subtly-wrong
+ * "fix" silently changing panel counts/positions for the already-tested
+ * common cases, this is left as a documented, tested (see
+ * `geometryBuilders.test.ts`'s "panel on-slope oversizing" test and
+ * `Scene3DView.tsx`'s render-time doc note) rendering limitation rather
+ * than patched here — a real geometric correction is tracked as a
+ * follow-up for whichever of #57/#59 revisits this composition, not fixed
+ * on a hunch that risks changing this function's already-tested
+ * row/col/center semantics.
  *
  * Grid indices (`row`/`col`) are stable across the *entire bounding-box
  * grid*, not just the cells that end up inside the polygon — that's what
