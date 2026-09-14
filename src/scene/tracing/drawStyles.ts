@@ -1,3 +1,18 @@
+import type { LayerSpecification } from '@maplibre/maplibre-gl-style-spec'
+
+/**
+ * A plain `Omit<LayerSpecification, 'source'>` collapses to only the
+ * fields common to *every* member of `LayerSpecification`'s union (e.g.
+ * `BackgroundLayerSpecification` has no `filter`) — `Omit`/`Pick` aren't
+ * distributive over a union on their own. This distributes it member-by-
+ * member first, so each entry below still gets checked against its own
+ * concrete layer type (`filter`, `paint`, `layout` included) rather than
+ * only the union's lowest common denominator.
+ */
+type DistributiveOmit<T, K extends keyof never> = T extends unknown
+  ? Omit<T, K>
+  : never
+
 /**
  * A copy of `@mapbox/mapbox-gl-draw`'s bundled default layer styles
  * (`@mapbox/mapbox-gl-draw/src/lib/theme.js`, not published as an import
@@ -24,8 +39,21 @@
  * `@mapbox/mapbox-gl-draw` doesn't publish `lib/theme.js` in its package
  * `exports` map, so it can't be imported directly; this is kept in sync
  * by hand against the installed version (currently 1.5.1) instead.
+ * `drawStyles.test.ts` guards against silent drift between this copy and
+ * the installed package's actual theme (modulo the `line-dasharray` fix
+ * above) by reading and diffing against that file directly.
  */
-export const DRAW_STYLES: object[] = [
+
+/**
+ * Each entry is missing `source` (a required `LayerSpecification` field):
+ * `@mapbox/mapbox-gl-draw` assigns `source` itself at runtime, once per
+ * cold/hot layer variant (see `drawStyles.test.ts`'s `withSource` helper,
+ * which mirrors that), so it's never present on this hand-maintained copy.
+ * `Omit<..., 'source'>` still gets real type-checking on everything else
+ * (`id`, `type`, `filter`, `layout`, `paint`) via the style-spec package
+ * (a devDependency), rather than the `object[]` this used to be typed as.
+ */
+export const DRAW_STYLES: DistributiveOmit<LayerSpecification, 'source'>[] = [
   // Polygons
   //   Solid fill
   //   Active state defines color

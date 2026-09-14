@@ -58,6 +58,18 @@ design spec:
 
 Each folder has its own `README.md` with more detail.
 
+## Dependencies
+
+`react`/`react-dom` are pinned to `~19.2.8` (tilde range: patch updates
+only) rather than the usual `^19.x`, because `@react-three/fiber` (the M2
+3D scene editor's renderer, see `src/scene/scene/README.md`) declares a
+peer dependency range of `>=19 <19.3` — `^19.2.8` would let npm resolve a
+19.3+ React that fiber doesn't yet support. Revisit this pin (widen it back
+to `^19.x`) once `@react-three/fiber`'s peer range moves past `19.3`; until
+then a stray `npm update` can't silently drift past what fiber supports,
+since the pin keeps it inside the peer range — a real React 19.3+ release
+would still need an explicit, deliberate bump here.
+
 ## Docs
 
 - [M1 design spec](docs/superpowers/specs/2026-09-12-solarly-m1-design.md)
