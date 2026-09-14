@@ -108,6 +108,12 @@ vi.mock('@react-three/fiber', () => ({
 vi.mock('@react-three/drei', () => ({
   OrbitControls: () => <div data-testid="orbit-controls" />,
   Text: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  Billboard: ({
+    children,
+    ...rest
+  }: {
+    children?: ReactNode
+  } & Record<string, unknown>) => <group {...rest}>{children}</group>,
 }))
 
 // Imported after the mocks above so the mocked modules are in place. Note

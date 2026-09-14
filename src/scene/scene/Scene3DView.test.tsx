@@ -580,17 +580,20 @@ describe('Scene3DView obstructions', () => {
     const xInput = screen.getByLabelText(/position east/i)
     const yInput = screen.getByLabelText(/position north/i)
 
-    // x alone (3, 60) is still outside the shape's footprint, so this
-    // move is legitimate and should go through...
+    // x alone (3, OUTSIDE_FOOTPRINT.y) is still outside the shape's
+    // footprint, so this move is legitimate and should go through...
     fireEvent.change(xInput, { target: { value: '3' } })
     expect(xInput).toHaveValue(3)
 
     // ...but (3, 4) — the same point `obstructionPlacement.test.ts` and
     // the earlier "does not place an obstruction under a tilted roof"
     // test use as a click genuinely inside the footprint — must be
-    // rejected here too, not just for a fresh click-to-place.
+    // rejected here too, not just for a fresh click-to-place. The field
+    // reverts to its last accepted value, OUTSIDE_FOOTPRINT.y (not the
+    // literal `60` some sibling tests use — see that constant's own
+    // definition for why it's `-40` here).
     fireEvent.change(yInput, { target: { value: '4' } })
-    expect(yInput).toHaveValue(60)
+    expect(yInput).toHaveValue(OUTSIDE_FOOTPRINT.y)
     expect(
       screen.getByText(/can.t place an obstruction inside a traced shape/i),
     ).toBeInTheDocument()

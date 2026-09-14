@@ -848,6 +848,21 @@ describe('SceneEditorFlow', () => {
     const closeButton = screen.getByRole('button', { name: 'Close' })
     const traceValid = screen.getByRole('button', { name: 'trace-valid' })
     const traceInvalid = screen.getByRole('button', { name: 'trace-invalid' })
+    // The stubbed step 1 also exposes trace-two/delete-first-shape/
+    // delete-all-shapes/trace-far-shape (added for the PR #100 anchor-drift
+    // regression tests below) — they sit in the same Tab sequence as
+    // trace-valid/trace-invalid, so the trap's full order has to account
+    // for them too.
+    const traceTwo = screen.getByRole('button', { name: 'trace-two' })
+    const deleteFirstShape = screen.getByRole('button', {
+      name: 'delete-first-shape',
+    })
+    const deleteAllShapes = screen.getByRole('button', {
+      name: 'delete-all-shapes',
+    })
+    const traceFarShape = screen.getByRole('button', {
+      name: 'trace-far-shape',
+    })
 
     // Initial focus is on the dialog container; the first real Tab press
     // reaches the first focusable descendant, the Close button.
@@ -857,6 +872,14 @@ describe('SceneEditorFlow', () => {
     expect(traceValid).toHaveFocus()
     await user.tab()
     expect(traceInvalid).toHaveFocus()
+    await user.tab()
+    expect(traceTwo).toHaveFocus()
+    await user.tab()
+    expect(deleteFirstShape).toHaveFocus()
+    await user.tab()
+    expect(deleteAllShapes).toHaveFocus()
+    await user.tab()
+    expect(traceFarShape).toHaveFocus()
     // Wraps back to the first focusable element, rather than leaving the
     // dialog (e.g. the fixture wrapper `render` mounts into, or the
     // document body).
@@ -865,7 +888,7 @@ describe('SceneEditorFlow', () => {
 
     // Shift+Tab from the first element wraps backward to the last.
     await user.tab({ shift: true })
-    expect(traceInvalid).toHaveFocus()
+    expect(traceFarShape).toHaveFocus()
   })
 
   it('skips content trapped inside a collapsed <details> when computing the last focusable element (issue #93 follow-up)', async () => {
