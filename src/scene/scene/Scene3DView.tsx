@@ -120,6 +120,32 @@ export interface Scene3DViewProps {
    * without a caller having to pass the same lat/lon twice.
    */
   location?: { lat: number; lon: number }
+  /**
+   * The shared scene-local coordinate frame's anchor point (issue #84's
+   * `sceneAnchorOrigin` — the first *traced* shape's polygon centroid, not
+   * necessarily the first entry in `shapes`, since `shapes` only ever
+   * contains shapes whose config has already resolved). When supplied,
+   * this is used verbatim instead of falling back to `shapes[0]`'s own
+   * origin.
+   *
+   * This matters because `shapes` only lists shapes with resolvable
+   * geometry — as shapes get configured in different orders, `shapes[0]`
+   * can silently change identity even though the *traced* order never
+   * did, which used to let this component's own `sceneOrigin` (and thus
+   * every ground click resolved while it was live — see
+   * `handleGroundClick`) drift out from under already-placed obstructions
+   * once a not-yet-configured earlier shape got its config filled in. A
+   * caller that also derives `SceneGeometry` from the same scene (e.g.
+   * `SceneEditorFlow`) should pass the exact same anchor here that it
+   * passes to `deriveSceneGeometryFromScene`, so the frame this component
+   * resolves clicks into never disagrees with the one obstructions are
+   * finally interpreted in.
+   *
+   * Falls back to `shapes[0]`'s own `geometry.origin` (the pre-#84
+   * behavior) when omitted, for standalone/demo usage that has no
+   * traced-shape list to derive a stabler anchor from.
+   */
+  sceneOrigin?: { lat: number; lon: number }
 }
 
 const PLANE_COLOR = '#93a3b8'
@@ -292,6 +318,7 @@ export function Scene3DView({
   defaultObstructions,
   onObstructionsChange,
   location,
+  sceneOrigin: sceneOriginProp,
 }: Scene3DViewProps) {
   const isControlled = controlledObstructions !== undefined
   const [internalObstructions, setInternalObstructions] = useState<
@@ -417,15 +444,20 @@ export function Scene3DView({
   const selectedObstruction = obstructions.find((o) => o.id === selectedId)
 
   // Every `ExtrusionGeometry` is independently centered on its own
-  // polygon's centroid (see that module's doc) — pick the first shape's
-  // origin as the shared scene-local frame's reference point so multiple
-  // shapes render at their correct relative positions instead of all
-  // piling up at (0, 0). Arbitrary but harmless: only relative rendering
-  // position depends on this choice, nothing else.
+  // polygon's centroid (see that module's doc) — the shared scene-local
+  // frame's reference point so multiple shapes render at their correct
+  // relative positions instead of all piling up at (0, 0). Prefers the
+  // caller-supplied `sceneOrigin` prop (issue #84's stable
+  // `sceneAnchorOrigin`, anchored to the first *traced* shape regardless
+  // of which shapes have resolved config) — see that prop's doc comment
+  // for why `shapes[0]`'s own origin is not a safe substitute once shapes
+  // can be configured out of trace order. Falls back to `shapes[0]`'s
+  // origin only for standalone/demo callers with no traced-shape list to
+  // derive a stabler anchor from.
   const firstShapeOrigin = shapes[0]?.geometry.origin
   const sceneOrigin = useMemo(
-    () => firstShapeOrigin ?? { lat: 0, lon: 0 },
-    [firstShapeOrigin],
+    () => sceneOriginProp ?? firstShapeOrigin ?? { lat: 0, lon: 0 },
+    [sceneOriginProp, firstShapeOrigin],
   )
 
   // Sun-position scrubber (issue #76): day-of-year (1-365) + hour-of-day

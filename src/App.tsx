@@ -21,6 +21,7 @@ import {
   type TmySimulationResult,
 } from './simulation'
 import { NasaPowerNoDataError } from './data-sources'
+import { PANEL_PRESETS } from './panel-presets'
 import { SceneEditorFlow, type SceneDesignState } from './scene/flow'
 import styles from './App.module.css'
 
@@ -334,6 +335,21 @@ function App() {
       ? sceneSystemConfig !== undefined
       : isSystemConfigValid
 
+  // The panel model the manual `SystemConfigForm` currently has selected
+  // (issue #88, item 1): `systemConfig.presetId` names a `PANEL_PRESETS`
+  // entry, or is `null` when the form's fields have been customized away
+  // from any preset. Threaded into `SceneEditorFlow`'s `panelPreset` prop
+  // below so an applied 3D scene uses the same real panel model the user
+  // picked on the manual form, rather than always silently falling back to
+  // `SceneEditorFlow`'s own generic-400Wp default (PR #70/#71 review
+  // findings) — `undefined` here (no preset selected, or a "Custom"
+  // configuration) is exactly the signal `SceneEditorFlowProps.panelPreset`
+  // already treats as "use my own default", so no separate fallback logic
+  // is needed on this side.
+  const selectedPanelPreset = systemConfig?.presetId
+    ? PANEL_PRESETS.find((p) => p.id === systemConfig.presetId)
+    : undefined
+
   function handleUpdate(runMode: Mode) {
     if (!location || !activeSystemConfig || !isActiveConfigValid) {
       return
@@ -507,6 +523,7 @@ function App() {
           location={location}
           onClose={() => setIsSceneOpen(false)}
           onStateChange={setSceneState}
+          panelPreset={selectedPanelPreset}
           onApply={({ systemConfig: config, sceneGeometry: geometry }) => {
             // `SceneEditorFlow` already derived the multi-array
             // `SystemConfig` (issue #61's `deriveSystemConfigFromScene`)

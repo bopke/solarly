@@ -5,4 +5,10 @@ export {
   type DeriveSystemConfigOptions,
 } from './deriveSystemConfig'
 
-export { deriveSceneGeometryFromScene } from './deriveSceneGeometry'
+export {
+  deriveSceneGeometryFromScene,
+  isShapeGeometryResolvable,
+  resolveShapeGeometry,
+  sceneAnchorOrigin,
+  type ResolvedShapeGeometry,
+} from './deriveSceneGeometry'

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NasaPowerNoDataError } from './data-sources'
+import { PANEL_PRESETS } from './panel-presets'
 import type {
   HourlyPoint,
   MonthlySimulation,
@@ -136,6 +137,7 @@ vi.mock('./scene/flow', () => ({
     onClose,
     onStateChange,
     onApply,
+    panelPreset,
   }: {
     open: boolean
     location: { lat: number; lon: number }
@@ -145,6 +147,11 @@ vi.mock('./scene/flow', () => ({
       systemConfig: unknown
       sceneGeometry: unknown
     }) => void
+    // Issue #88, item 1: captured here (as a data attribute) so a test can
+    // assert `App.tsx` actually threads the manual form's selected preset
+    // through, rather than always leaving this prop `undefined` (which
+    // silently falls back to `SceneEditorFlow`'s own generic-400Wp default).
+    panelPreset?: { id: string }
   }) => {
     useEffect(() => {
       sceneFlowMounts.push({ lat: location.lat })
@@ -154,7 +161,11 @@ vi.mock('./scene/flow', () => ({
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
     return open ? (
-      <div data-testid="scene-editor-flow" data-lat={location.lat}>
+      <div
+        data-testid="scene-editor-flow"
+        data-lat={location.lat}
+        data-panel-preset-id={panelPreset?.id ?? ''}
+      >
         <button onClick={onClose}>close-scene</button>
         <button
           onClick={() =>
@@ -501,6 +512,39 @@ describe('App', () => {
       const overlay = screen.getByTestId('scene-editor-flow')
       expect(overlay).toBeInTheDocument()
       expect(overlay).toHaveAttribute('data-lat', '48.8566')
+    })
+
+    it('threads the manual form’s selected panel preset into SceneEditorFlow (regression for issue #88, item 1)', () => {
+      // Before the fix, `App.tsx` never passed a `panelPreset` prop at
+      // all, so an applied 3D scene always silently used
+      // `SceneEditorFlow`'s own generic-400Wp default even if the user had
+      // picked a specific real panel model on the manual form.
+      render(<App />)
+      setLocationViaMapClick()
+
+      const preset = PANEL_PRESETS[0]
+      fireEvent.change(screen.getByLabelText(/panel preset/i), {
+        target: { value: preset.id },
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+
+      expect(screen.getByTestId('scene-editor-flow')).toHaveAttribute(
+        'data-panel-preset-id',
+        preset.id,
+      )
+    })
+
+    it('passes no panelPreset (letting SceneEditorFlow fall back to its own default) when the manual form has no preset selected', () => {
+      render(<App />)
+      setLocationViaMapClick()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+
+      expect(screen.getByTestId('scene-editor-flow')).toHaveAttribute(
+        'data-panel-preset-id',
+        '',
+      )
     })
 
     it('closes the overlay via onClose, and reopening still shows "Design in 3D" (no scene applied yet)', () => {

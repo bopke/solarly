@@ -91,21 +91,24 @@ export interface DeriveSystemConfigOptions {
  *
  * This function's own array-inclusion condition (a matching `shapeConfigs`
  * entry) is looser than `deriveSceneGeometryFromScene`'s (a matching
- * config AND a non-degenerate polygon/tilt combination — see that
- * function's doc comment): a shape can pass here but be skipped there,
- * e.g. a self-intersecting polygon that slipped through step-1 validation
- * with a still-present step-2 config. Rather than change which arrays this
- * function produces (that would drop a shape's tilt/azimuth/panel-count
- * from the applied `SystemConfig` entirely, changing this issue's own
- * behavior beyond its scope), such an array is still produced but with
- * `shapeId: undefined` — explicitly opting it out of #77's occlusion path
- * rather than setting an id that `SceneGeometry.shapes` will never contain
- * (which `resolveArrayScenePanels` would also fall back safely on, but
- * leaving that to an incidental lookup-miss rather than an explicit
- * decision is exactly the "accidental" behavior this issue's scope calls
- * out to fix). Such an array instead uses the pre-M3
- * `manualShadingPercent` flat-derate path unchanged, same as before this
- * field existed.
+ * config AND a non-degenerate, finite-tilt/azimuth polygon/tilt
+ * combination — both checked via the shared `resolveShapeGeometry`, see
+ * that function's doc comment): a shape can pass here but be skipped
+ * there, e.g. a self-intersecting polygon that slipped through step-1
+ * validation with a still-present step-2 config, or a `NaN` tilt/azimuth
+ * (issue #89 — currently unreachable via the UI, but hardened here for
+ * free since both derivations flow through the same check). Rather than
+ * change which arrays this function produces (that would drop a shape's
+ * tilt/azimuth/panel-count from the applied `SystemConfig` entirely,
+ * changing this issue's own behavior beyond its scope), such an array is
+ * still produced but with `shapeId: undefined` — explicitly opting it out
+ * of #77's occlusion path rather than setting an id that
+ * `SceneGeometry.shapes` will never contain (which `resolveArrayScenePanels`
+ * would also fall back safely on, but leaving that to an incidental
+ * lookup-miss rather than an explicit decision is exactly the "accidental"
+ * behavior this issue's scope calls out to fix). Such an array instead uses
+ * the pre-M3 `manualShadingPercent` flat-derate path unchanged, same as
+ * before this field existed.
  */
 export function deriveSystemConfigFromScene(
   state: SceneDesignState,

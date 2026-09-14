@@ -10,3 +10,5 @@ export { createObstruction } from './obstructions'
 
 export type { Ray3 } from './obstructionPlacement'
 export { intersectGroundPlane } from './obstructionPlacement'
+
+export { offsetToSceneOrigin } from './geometryBuilders'

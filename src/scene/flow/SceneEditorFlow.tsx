@@ -3,12 +3,17 @@ import { SceneTracing } from '../tracing'
 import type { TracedShape } from '../tracing'
 import { ConfigureShapes } from '../configure'
 import type { ShapeConfig } from '../configure'
-import { Scene3DView } from '../scene'
+import { Scene3DView, offsetToSceneOrigin } from '../scene'
 import type { Obstruction, Scene3DShape, ShapePanelLayout } from '../scene'
-import { polygonToExtrusionGeometry, type PanelDimensions } from '../derive'
+import {
+  polygonToExtrusionGeometry,
+  type LatLon,
+  type PanelDimensions,
+} from '../derive'
 import {
   deriveSceneGeometryFromScene,
   deriveSystemConfigFromScene,
+  sceneAnchorOrigin,
 } from '../apply'
 import { PANEL_PRESETS, type PanelPreset } from '../../panel-presets'
 import type { SceneGeometry, SystemConfig } from '../../simulation'
@@ -66,11 +71,6 @@ const FALLBACK_PANEL_PRESET: PanelPreset = {
 const DEFAULT_PANEL_PRESET: PanelPreset =
   PANEL_PRESETS.find((p) => p.id === 'generic-residential-default') ??
   FALLBACK_PANEL_PRESET
-
-const DEFAULT_PANEL: PanelDimensions = {
-  widthMm: DEFAULT_PANEL_PRESET.widthMm,
-  heightMm: DEFAULT_PANEL_PRESET.heightMm,
-}
 
 /** Matches `SystemConfigForm`'s own default for the equivalent field (`DEFAULT_VALUES.systemLossesPercent`). */
 const DEFAULT_SYSTEM_LOSSES_INPUT = '14'
@@ -219,14 +219,28 @@ export interface SceneEditorFlowProps {
    * still shown (so the step-4 shell exists) but does nothing on click.
    */
   onApply?: (result: SceneApplyResult) => void
-  /** Panel dimensions used to auto-fill the 3D preview when a shape doesn't specify its own. Defaults to `panelPreset`'s dimensions. */
+  /**
+   * Panel dimensions used to auto-fill the 3D preview when a shape doesn't
+   * specify its own. Defaults to `panelPreset`'s own dimensions (see that
+   * prop) — pass this explicitly only to make the 3D preview's auto-fill
+   * grid use a *different* footprint than the panel model driving the
+   * wattage calc, which should be rare; the common case is to leave both
+   * this and `panelPreset` at their defaults, or set `panelPreset` alone
+   * and let this follow it, so panel *count* (physical layout, driven by
+   * this prop) and panel *wattage* (driven by `panelPreset`) always agree
+   * on which panel model is in use. See issue #88/PR #100 review Finding 1
+   * for the bug this guards against: passing `panelPreset` without also
+   * updating this field silently re-introduces a count/wattage mismatch.
+   */
   defaultPanel?: PanelDimensions
   /**
    * The panel model used to fill every derived array's `wattsPerPanel`/
    * `efficiencyPercent`/`tempCoefficientPercentPerC` on Apply (issue #61)
    * — see `DEFAULT_PANEL_PRESET`'s doc comment for why this is a single
    * preset for the whole scene rather than per-shape. Defaults to the
-   * `generic-residential-default` preset.
+   * `generic-residential-default` preset. Also implicitly drives
+   * `defaultPanel`'s default (its physical dimensions) when that prop
+   * isn't separately overridden — see `defaultPanel`'s doc comment.
    */
   panelPreset?: PanelPreset
   /** Passed through to `SceneTracing` — mainly for tests; real callers should rely on the `VITE_MAPBOX_API_KEY` env var instead. */
@@ -268,10 +282,49 @@ export function SceneEditorFlow({
   onClose,
   onStateChange,
   onApply,
-  defaultPanel = DEFAULT_PANEL,
   panelPreset = DEFAULT_PANEL_PRESET,
+  defaultPanel: defaultPanelProp,
   mapboxApiKey,
 }: SceneEditorFlowProps) {
+  // Memoized rather than a plain default-parameter object literal: a
+  // default parameter is re-evaluated on *every* call (i.e. every render),
+  // so `{ widthMm: ..., heightMm: ... }` as a default would get a fresh
+  // object identity each render even when the values haven't changed. That
+  // fresh identity flows straight into `Scene3DView`'s
+  // `shapePanelLayouts` memo (keyed on `[shapes, defaultPanel]`), which
+  // would then never actually memoize — it recomputes a new array every
+  // render, which re-fires the effect that calls `onPanelLayoutChange`
+  // (`setPanelLayouts` here), which re-renders this component, which
+  // creates a new `defaultPanel` object again, forever. See PR #100 review
+  // Finding A for the reproduction (202+ renders / "Maximum update depth
+  // exceeded" in isolation, 5+ minutes wedged end-to-end through the real
+  // component tree).
+  //
+  // Keyed on the scalar `widthMm`/`heightMm` values (of whichever source —
+  // an explicit `defaultPanel` prop, or `panelPreset` as the fallback) —
+  // not on `defaultPanelProp`/`panelPreset` object identity — so this stays
+  // stable even if a caller passes a fresh `panelPreset` object every
+  // render (not the case for `App.tsx`, which sources it from a stable
+  // `PANEL_PRESETS.find` entry, but not guaranteed for every caller) or an
+  // inline `defaultPanel={{ widthMm, heightMm }}` literal.
+  const defaultPanel = useMemo<PanelDimensions>(
+    () =>
+      defaultPanelProp ?? {
+        widthMm: panelPreset.widthMm,
+        heightMm: panelPreset.heightMm,
+      },
+    // Deliberately keyed on the scalars that actually determine the
+    // result, not on `defaultPanelProp`/`panelPreset` object identity; see
+    // the comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      defaultPanelProp?.widthMm,
+      defaultPanelProp?.heightMm,
+      panelPreset.widthMm,
+      panelPreset.heightMm,
+    ],
+  )
+
   const [step, setStep] = useState<Step>(1)
   const [systemLossesInput, setSystemLossesInput] = useState(
     DEFAULT_SYSTEM_LOSSES_INPUT,
@@ -289,6 +342,91 @@ export function SceneEditorFlow({
   const [isShapeConfigValid, setIsShapeConfigValid] = useState(true)
   const [obstructions, setObstructions] = useState<Obstruction[]>([])
   const [panelLayouts, setPanelLayouts] = useState<ShapePanelLayout[]>([])
+
+  // The shared scene-local frame's anchor (issue #84's `sceneAnchorOrigin`
+  // — the first *traced* shape's polygon centroid, independent of which
+  // shapes' step-2 config has resolved). Passed straight through to
+  // `Scene3DView` below as its `sceneOrigin` prop, so every ground click
+  // it resolves an obstruction's position from uses this exact same frame
+  // — and `deriveSceneGeometryFromScene` (in `handleApply` below) derives
+  // its own `sceneOrigin` the identical way from the identical
+  // `tracedShapes`, so the two never disagree.
+  const sceneOrigin = useMemo(
+    () => sceneAnchorOrigin(tracedShapes),
+    [tracedShapes],
+  )
+
+  // Defensive re-projection (the module doc's second #84 mitigation,
+  // alongside anchoring on trace order rather than resolvability): even a
+  // trace-order anchor can still move if the first-traced shape itself is
+  // deleted (mapbox-gl-draw allows deleting a traced shape mid-session).
+  // Rather than leave already-placed obstructions silently misaligned
+  // relative to the shapes around them when that happens, re-express every
+  // stored `Obstruction.position` in the *new* frame the instant the
+  // anchor changes — for a *direct* real-anchor-to-real-anchor move (the
+  // common case: delete the last shape and re-trace roughly the same roof,
+  // or trace a second shape after the first).
+  //
+  // `sceneAnchorOrigin([])` returns the `{ lat: 0, lon: 0 }` sentinel when
+  // there are zero traced shapes (e.g. right after deleting the last one —
+  // step 1 stays mounted for this component's whole lifetime, so this is
+  // reachable well after obstructions have already been placed). That
+  // sentinel isn't a real anchor, just a fallback value with no shape
+  // behind it — re-projecting *through* it is not a valid coordinate
+  // transform (`offsetToSceneOrigin` scales x by the destination anchor's
+  // `cos(latitude)`, so a round trip via `{0,0}` is not the identity at any
+  // other latitude — see PR #100 review Finding 2, measured at ~905 km).
+  // So this effect explicitly skips re-projecting whenever either the old
+  // or the new anchor corresponds to a zero-shapes state, leaving
+  // obstructions untouched (rather than flinging them through a fake
+  // origin) across a real-anchor -> sentinel -> real-anchor transition
+  // (e.g. delete the *only* traced shape, then trace a new one somewhere
+  // unrelated); re-projection resumes normally once a direct real-anchor
+  // change happens again.
+  //
+  // This intentionally makes the effect *path-dependent*: a direct A -> B
+  // anchor move re-projects obstructions into the new frame, but an
+  // A -> sentinel -> B path (delete-all, then retrace) does not, even
+  // though both end at the same final `tracedShapes`. That's a deliberate
+  // trade-off, not an oversight — obstructions can go briefly stale
+  // (rendered at their old local offsets, which may no longer correspond
+  // to anything on the new roof) after a delete-all-then-retrace sequence,
+  // but they stay visible and in-scene rather than either (a) being
+  // silently flung ~905 km away by a fake-origin re-projection, or (b)
+  // being destructively cleared, which would discard user-placed
+  // obstructions even in the far more common case of re-tracing the same
+  // roof after only a minor edit. See PR #100 review Finding 2.
+  const prevSceneOriginRef = useRef<LatLon | null>(null)
+  const prevHadTracedShapesRef = useRef(false)
+  useEffect(() => {
+    const prev = prevSceneOriginRef.current
+    const prevHadTracedShapes = prevHadTracedShapesRef.current
+    const hasTracedShapes = tracedShapes.length > 0
+    prevSceneOriginRef.current = sceneOrigin
+    prevHadTracedShapesRef.current = hasTracedShapes
+    if (!prev) return // First render: nothing to re-project yet.
+    if (prev.lat === sceneOrigin.lat && prev.lon === sceneOrigin.lon) return
+    if (!prevHadTracedShapes || !hasTracedShapes) return // {0,0} sentinel on either end: not a real anchor to project from/to.
+
+    const delta = offsetToSceneOrigin(prev, sceneOrigin)
+    if (delta.x === 0 && delta.y === 0) return
+    setObstructions((current) =>
+      current.map((o) => ({
+        ...o,
+        position: { x: o.position.x + delta.x, y: o.position.y + delta.y },
+      })),
+    )
+    // Only depending on `sceneOrigin` is deliberate: this must NOT also
+    // depend on `obstructions`/`setObstructions`, or every ordinary
+    // obstruction edit would re-trigger it against a `prev` that never
+    // actually changed. `setObstructions` is a `useState` setter (stable
+    // identity across renders), so omitting it is safe. `tracedShapes` is
+    // read here only to classify the current/previous anchor as
+    // sentinel-vs-real; it already changes in lockstep with `sceneOrigin`
+    // (which is itself derived from it), so it doesn't need to be a
+    // separate dependency to be read with an up-to-date value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sceneOrigin])
 
   // Mount step 1 as soon as the overlay is first opened, and mount each
   // later step the first time it's actually reached — then never drop
@@ -621,6 +759,7 @@ export function SceneEditorFlow({
               obstructions={obstructions}
               onObstructionsChange={setObstructions}
               location={location}
+              sceneOrigin={sceneOrigin}
               className={styles.scene3D}
             />
           </div>
@@ -642,6 +781,22 @@ export function SceneEditorFlow({
                 {obstructions.length} obstruction
                 {obstructions.length === 1 ? '' : 's'} placed. Applying will
                 replace the manual single-array configuration with this scene.
+              </p>
+              {/*
+                Issue #88, item 2: applying a scene zeroes out
+                `manualShadingPercent` for every geometry-resolved array
+                (correct — shading is instead computed from the placed
+                obstructions/shape geometry at simulation time, see
+                `deriveSystemConfig.ts`'s `DEFAULT_SCENE_MANUAL_SHADING_PERCENT`
+                and `sceneOcclusion.ts`), but nothing told the user that any
+                shading percentage they'd entered on the manual form is
+                about to stop applying. This note makes that swap visible
+                rather than silent.
+              */}
+              <p className={styles.applyShadingNote}>
+                Any manually-entered shading percentage from the single-array
+                form won&rsquo;t apply here — this scene&rsquo;s shading is
+                instead computed from its traced shapes and placed obstructions.
               </p>
 
               <div className={styles.applyField}>
