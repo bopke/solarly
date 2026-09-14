@@ -30,7 +30,7 @@ import {
   intersectGroundPlane,
   isInsideAnyFootprint,
 } from './obstructionPlacement'
-import { computeSunLightState, dayHourToUtcDate } from './sunDirection'
+import { computeSunLightState, dayHourToUtcDate } from './sunScrubber'
 import styles from './Scene3DView.module.css'
 
 /**

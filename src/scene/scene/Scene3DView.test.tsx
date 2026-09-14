@@ -217,8 +217,10 @@ describe('Scene3DView sun-position scrubber (issue #76)', () => {
     const light = container.querySelector('directionallight')
     expect(light).not.toBeNull()
     // A real value is present (not e.g. "0,0,0") — the exact number is
-    // covered precisely by sunDirection.test.ts; this just confirms the
-    // rendered light is actually wired to a computed position.
+    // covered precisely by sunScrubber.test.ts (and, for the underlying
+    // altitude/azimuth -> ENU conversion, solar-physics/sunDirection.test.ts);
+    // this just confirms the rendered light is actually wired to a computed
+    // position.
     expect(light?.getAttribute('position')).toMatch(
       /-?\d+(\.\d+)?,-?\d+(\.\d+)?,-?\d+(\.\d+)?/,
     )

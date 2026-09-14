@@ -1,28 +1,35 @@
 /**
  * Pure geometry helpers for validating traced polygons.
  *
- * `src/scene/derive/` (issue #55, polygon → 3D extrusion geometry etc.) has
- * not landed on `main` yet as of this module's creation, so these are a
- * minimal, self-contained implementation scoped to exactly what tracing's
- * validation needs (area + self-intersection) rather than a dependency on
- * that not-yet-existing module. If/when `derive/` lands with equivalent
- * helpers, this file is a reasonable candidate to consolidate into it.
+ * The local-meters projection used here delegates to
+ * `scene/derive/geo.ts`'s `toLocalMeters`/`polygonCentroid` (issue #91,
+ * item 3) rather than maintaining an independent implementation: an
+ * earlier, scale-only version of this file's projection anchored only its
+ * *scale* on the origin latitude but never translated coordinates off of
+ * raw lat/lon degrees, leaving points at ~1e6-1e7 m at real-world
+ * latitudes — large enough that `segmentsIntersect`'s `1e-9` collinearity
+ * epsilon below was effectively dead (see issue #91 for the Berlin-scale
+ * example that surfaced this). `derive/geo.ts`'s version actually
+ * translates to a local origin, which keeps projected coordinates small
+ * and the epsilon meaningful. This is a one-way dependency
+ * (`scene/tracing` → `scene/derive`); `scene/derive` has no reverse
+ * dependency on `scene/tracing`.
+ *
+ * `LatLon` itself stays independently declared here rather than importing
+ * `scene/derive/geo.ts`'s — see issue #66, which tracks that (structurally
+ * interchangeable) duplication separately from this projection fix.
  */
 
-// TODO(#66): `LatLon` is also declared in #55's `scene/derive/geo.ts` once
-// that lands. Structural typing makes the two interchangeable today, but
-// having two declarations of the module tree's core coordinate type is
-// worth consolidating — likely into a shared `src/scene/types.ts` — once
-// #55 is on `main` and the shape of `derive/`'s version is settled. See
-// issue #66.
+import {
+  polygonCentroid,
+  toLocalMeters as projectToLocalMeters,
+} from '../derive/geo'
+
 /** A single vertex of a traced polygon, in WGS84 degrees. */
 export interface LatLon {
   lat: number
   lon: number
 }
-
-/** Meters per degree of latitude — constant everywhere (WGS84 sphere approx). */
-const METERS_PER_DEG_LAT = 111_320
 
 /**
  * A polygon's real-world area is near-zero below this threshold (m²) —
@@ -35,18 +42,18 @@ export const MIN_POLYGON_AREA_M2 = 1
 
 /**
  * Projects lat/lon degrees to a local flat-earth approximation in meters,
- * anchored at the polygon's own centroid-ish first vertex. Fine for the
- * small (building/plot-scale) extents this module deals with — not meant
- * for anything spanning a meaningful fraction of the globe.
+ * translated to the polygon's own centroid (via `scene/derive/geo.ts`'s
+ * `toLocalMeters`/`polygonCentroid`) rather than left at raw lat/lon scale.
+ * Fine for the small (building/plot-scale) extents this module deals
+ * with — not meant for anything spanning a meaningful fraction of the
+ * globe. Translation doesn't affect this module's area or
+ * self-intersection results (both translation-invariant), it only keeps
+ * projected coordinates small enough for `segmentsIntersect`'s
+ * collinearity epsilon to remain meaningful.
  */
 function toLocalMeters(polygon: LatLon[]): { x: number; y: number }[] {
-  const originLat = polygon[0].lat
-  const metersPerDegLon =
-    METERS_PER_DEG_LAT * Math.cos((originLat * Math.PI) / 180)
-  return polygon.map((point) => ({
-    x: point.lon * metersPerDegLon,
-    y: point.lat * METERS_PER_DEG_LAT,
-  }))
+  const origin = polygonCentroid(polygon)
+  return polygon.map((point) => projectToLocalMeters(point, origin))
 }
 
 /**
