@@ -164,6 +164,16 @@ interface FakePanelLayout {
   panels: unknown[]
 }
 
+// Captures every `defaultPanel` object reference `SceneEditorFlow` passes
+// down, across every render of the mocked `Scene3DView` — used by the
+// PR #100 review Finding A regression test below to assert *identity*
+// stability (`toBe`), not just value equality. Declared via `vi.hoisted`
+// since `vi.mock` factories run before other module-scope code and can't
+// close over an ordinary `const`.
+const { defaultPanelRenders } = vi.hoisted(() => ({
+  defaultPanelRenders: [] as unknown[],
+}))
+
 vi.mock('../scene', () => ({
   Scene3DView: ({
     shapes,
@@ -177,48 +187,51 @@ vi.mock('../scene', () => ({
     onObstructionsChange?: (obstructions: FakeObstruction[]) => void
     onPanelLayoutChange?: (layouts: FakePanelLayout[]) => void
     defaultPanel?: { widthMm: number; heightMm: number }
-  }) => (
-    <div data-testid="scene3d-step">
-      <div data-testid="scene3d-shape-count">{shapes.length}</div>
-      {/* Exposes the exact `defaultPanel` prop `SceneEditorFlow` computed/
-          passed down — needed to catch PR #100 review Finding 1 (panel
-          *count*, driven by this prop, silently using the generic
-          default's dimensions while panel *wattage*, driven by
-          `panelPreset`, used the real selected preset). */}
-      <div data-testid="scene3d-default-panel">
-        {JSON.stringify(defaultPanel)}
+  }) => {
+    defaultPanelRenders.push(defaultPanel)
+    return (
+      <div data-testid="scene3d-step">
+        <div data-testid="scene3d-shape-count">{shapes.length}</div>
+        {/* Exposes the exact `defaultPanel` prop `SceneEditorFlow` computed/
+            passed down — needed to catch PR #100 review Finding 1 (panel
+            *count*, driven by this prop, silently using the generic
+            default's dimensions while panel *wattage*, driven by
+            `panelPreset`, used the real selected preset). */}
+        <div data-testid="scene3d-default-panel">
+          {JSON.stringify(defaultPanel)}
+        </div>
+        <button
+          onClick={() =>
+            onObstructionsChange?.([
+              ...(obstructions ?? []),
+              {
+                id: `obstruction-${(obstructions?.length ?? 0) + 1}`,
+                kind: 'tree',
+                position: { x: 0, y: 0 },
+                heightM: 5,
+                radiusM: 1.5,
+              },
+            ])
+          }
+        >
+          add-obstruction
+        </button>
+        <button
+          onClick={() =>
+            onPanelLayoutChange?.(
+              shapes.map((s) => ({
+                shapeId: s.id,
+                panelCount: 12,
+                panels: [],
+              })),
+            )
+          }
+        >
+          report-panels
+        </button>
       </div>
-      <button
-        onClick={() =>
-          onObstructionsChange?.([
-            ...(obstructions ?? []),
-            {
-              id: `obstruction-${(obstructions?.length ?? 0) + 1}`,
-              kind: 'tree',
-              position: { x: 0, y: 0 },
-              heightM: 5,
-              radiusM: 1.5,
-            },
-          ])
-        }
-      >
-        add-obstruction
-      </button>
-      <button
-        onClick={() =>
-          onPanelLayoutChange?.(
-            shapes.map((s) => ({
-              shapeId: s.id,
-              panelCount: 12,
-              panels: [],
-            })),
-          )
-        }
-      >
-        report-panels
-      </button>
-    </div>
-  ),
+    )
+  },
   // Real implementation (not a stub): `SceneEditorFlow`'s anchor
   // re-projection effect (issue #84) calls this directly, so a mock that
   // just returned `{ x: 0, y: 0 }` would silently mask that logic instead
@@ -309,6 +322,42 @@ describe('SceneEditorFlow', () => {
     expect(screen.getByTestId('scene3d-default-panel')).toHaveTextContent(
       JSON.stringify({ widthMm: 1000, heightMm: 2000 }),
     )
+  })
+
+  it('keeps defaultPanel a stable object reference across re-renders when panelPreset is unchanged (PR #100 review Finding A)', async () => {
+    // Regression for the previous fix's `defaultPanel = { widthMm:
+    // panelPreset.widthMm, heightMm: panelPreset.heightMm }` default-
+    // parameter object literal: default parameters are re-evaluated on
+    // every call (render), so that produced a *new* `defaultPanel` object
+    // every render even when its values were unchanged — which, against
+    // the real (unmocked) `Scene3DView`, closes a `useMemo`/`useEffect`/
+    // `setState` cycle that never settles (see
+    // `SceneEditorFlow.infiniteLoop.test.tsx` for the end-to-end
+    // reproduction). This test can't exercise that cycle directly, since
+    // `Scene3DView` is mocked out above with a stub that has no
+    // `useMemo`/`useEffect` — but it does assert the exact axis that
+    // regressed: object *identity* (`toBe`), not value (`toEqual`/
+    // `toHaveTextContent`), which is what the pre-existing Finding-1 tests
+    // above check and what let this regression slip through in the first
+    // place.
+    defaultPanelRenders.length = 0
+    const user = userEvent.setup()
+    render(<Harness />)
+    await user.click(screen.getByRole('button', { name: 'trace-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.click(screen.getByRole('button', { name: 'configure-valid' }))
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(defaultPanelRenders.length).toBeGreaterThan(0)
+    const firstDefaultPanel = defaultPanelRenders.at(-1)
+
+    // Trigger an unrelated re-render of `SceneEditorFlow` (adding an
+    // obstruction sets `obstructions` state, which re-renders the whole
+    // tree including `Scene3DView`) without changing `panelPreset` at all.
+    await user.click(screen.getByRole('button', { name: 'add-obstruction' }))
+
+    const lastDefaultPanel = defaultPanelRenders.at(-1)
+    expect(lastDefaultPanel).toBe(firstDefaultPanel)
   })
 
   it('starts on step 1 with Next disabled until a valid shape is traced', async () => {
