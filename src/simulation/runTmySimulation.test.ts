@@ -283,14 +283,19 @@ describe('buildTmySimulationResult', () => {
     // ~1,700-1,800 kWh/kWp for a comparable Phoenix system once inverter
     // efficiency and a diurnal temperature curve are modeled, neither of
     // which this simplified pipeline does yet — see ADR 0040's "known,
-    // one-directional bias" notes). The previous band here (1,000-2,500
+    // one-directional bias" notes). An earlier band here (1,000-2,500
     // kWh/kWp) was wide enough to pass an order-of-magnitude bug and
-    // nothing else (per the PR review); this tighter band still allows
-    // for the model's documented simplifications while catching a real
-    // regression in the disaggregation or clear-sky pipeline.
+    // nothing else (per the PR review); a second pass (1,500-2,200) was
+    // still loose enough to be largely tautological given the surrounding
+    // pinned-value assertions in this file (issue #90). This band
+    // (1,800-2,100) is pinned tightly around this fixture's actual computed
+    // value (~1,960 kWh/kWp, comfortably inside PVWatts's real-world
+    // ~1,700-1,800 reference range once this model's known simplifications
+    // are accounted for) while still allowing headroom for legitimate
+    // floating-point/solar-physics refinements to shift it slightly.
     const kWhPerKWp = result.annualTotalKWh / 8 // 20 panels * 400W = 8kWp
-    expect(kWhPerKWp).toBeGreaterThan(1500)
-    expect(kWhPerKWp).toBeLessThan(2200)
+    expect(kWhPerKWp).toBeGreaterThan(1800)
+    expect(kWhPerKWp).toBeLessThan(2100)
   })
 
   it('applies manual shading as an additional derate on top of system losses', () => {

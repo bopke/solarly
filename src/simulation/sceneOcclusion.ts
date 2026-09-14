@@ -30,6 +30,23 @@ import type { PanelSpec } from '../solar-physics/index.ts'
 import type { PanelArrayConfig, SceneGeometry } from './types.ts'
 
 /**
+ * Converts a {@link PanelArrayConfig} into the {@link PanelSpec} shape
+ * `panelPowerOutput` expects. Shared by `runLiveSimulation.ts` and
+ * `runTmySimulation.ts` (previously duplicated identically in both, with an
+ * inconsistent explicit return-type annotation between the two copies) so
+ * there's exactly one place defining how an array's panel-count/
+ * wattage/efficiency/temp-coefficient fields map onto the solar-physics
+ * pipeline's panel model.
+ */
+export function toPanelSpec(array: PanelArrayConfig): PanelSpec {
+  return {
+    ratedWattsPeak: array.panelCount * array.wattsPerPanel,
+    efficiencyPercent: array.efficiencyPercent,
+    tempCoefficientPercentPerC: array.tempCoefficientPercentPerC,
+  }
+}
+
+/**
  * One array's resolved scene geometry: its real panel positions plus the
  * obstacle list every one of them should be tested against (every *other*
  * shape, per the M3 spec's "a shape never occludes its own panels" rule,

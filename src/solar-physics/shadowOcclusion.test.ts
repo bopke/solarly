@@ -175,6 +175,53 @@ describe('rayPolygonIntersection', () => {
       ),
     ).toBeNull()
   })
+
+  it('handles a reversed-winding (clockwise) non-convex polygon the same as its counterclockwise counterpart', () => {
+    // The exact same L-shape as above, but with its vertex order reversed
+    // (clockwise instead of counterclockwise) — a valid, real-world tracing
+    // input this project doesn't otherwise constrain (see
+    // `scene/derive/geo.ts`'s doc on legitimate tracing input), and the
+    // normal/point-in-polygon math must not silently assume a fixed
+    // winding order. Manually verified by the reviewer (800 rays, 0
+    // mismatches against the counterclockwise version) but that test case
+    // never landed — this is that missing regression coverage.
+    const lShapeReversed: Vec3[] = [
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: 4, z: 0 },
+      { x: 2, y: 4, z: 0 },
+      { x: 2, y: 2, z: 0 },
+      { x: 4, y: 2, z: 0 },
+      { x: 4, y: 0, z: 0 },
+    ]
+
+    // (1,1) is inside the bottom strip (part of both arms).
+    expect(
+      rayPolygonIntersection(
+        { x: 1, y: 1, z: -5 },
+        { x: 0, y: 0, z: 1 },
+        lShapeReversed,
+      ),
+    ).toBeCloseTo(5, 9)
+
+    // (3,1) is inside the bottom strip only (right arm, outside the left
+    // arm's x-range) — a case a convex-hull-shaped bug would get wrong.
+    expect(
+      rayPolygonIntersection(
+        { x: 3, y: 1, z: -5 },
+        { x: 0, y: 0, z: 1 },
+        lShapeReversed,
+      ),
+    ).toBeCloseTo(5, 9)
+
+    // (3,3) falls in the removed notch — outside the L-shape entirely.
+    expect(
+      rayPolygonIntersection(
+        { x: 3, y: 3, z: -5 },
+        { x: 0, y: 0, z: 1 },
+        lShapeReversed,
+      ),
+    ).toBeNull()
+  })
 })
 
 describe('rayCylinderIntersection', () => {

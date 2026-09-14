@@ -20,6 +20,69 @@ const { canvasPropsLog } = vi.hoisted(() => ({
   canvasPropsLog: [] as Record<string, unknown>[],
 }))
 
+// Captures the *actual* props object passed to every `<primitive>` and
+// `<directionalLight>` element as they're created, keyed by tag name — used
+// by the PR #81 review finding 1 regression test below to compare object
+// *identity* (not a stringified/serialized value) between the light's
+// `target` prop and the primitive's `object` prop. This is necessary
+// because the mocked `Canvas` above renders R3F's intrinsic elements
+// (`directionallight`, `primitive`, etc.) through plain react-dom: a
+// non-primitive prop value like `target={someObject}` gets serialized to
+// the DOM as the attribute string `"[object Object]"` (via
+// `node.setAttribute`), which is indistinguishable between two genuinely
+// different objects — reading it back via `getAttribute`/DOM properties
+// loses the very distinction (same object vs. two different objects with
+// the same shape) this regression test needs to make. Intercepting at the
+// `jsx`/`jsxs`/`jsxDEV` factory level (this project's `tsconfig.app.json`
+// uses the automatic JSX runtime) captures the real, un-serialized prop
+// values before react-dom ever touches them.
+const { elementPropsLog } = vi.hoisted(() => ({
+  elementPropsLog: { primitive: [], directionalLight: [] } as Record<
+    'primitive' | 'directionalLight',
+    Record<string, unknown>[]
+  >,
+}))
+
+function recordElementProps(type: unknown, props: unknown) {
+  if (type === 'primitive' || type === 'directionalLight') {
+    elementPropsLog[type].push(props as Record<string, unknown>)
+  }
+}
+
+vi.mock('react/jsx-runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react/jsx-runtime')>()
+  return {
+    ...actual,
+    jsx: (type: unknown, props: unknown, ...rest: unknown[]) => {
+      recordElementProps(type, props)
+      return (
+        actual.jsx as (...args: unknown[]) => ReturnType<typeof actual.jsx>
+      )(type, props, ...rest)
+    },
+    jsxs: (type: unknown, props: unknown, ...rest: unknown[]) => {
+      recordElementProps(type, props)
+      return (
+        actual.jsxs as (...args: unknown[]) => ReturnType<typeof actual.jsxs>
+      )(type, props, ...rest)
+    },
+  }
+})
+
+vi.mock('react/jsx-dev-runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react/jsx-dev-runtime')>()
+  return {
+    ...actual,
+    jsxDEV: (type: unknown, props: unknown, ...rest: unknown[]) => {
+      recordElementProps(type, props)
+      return (
+        actual.jsxDEV as (
+          ...args: unknown[]
+        ) => ReturnType<typeof actual.jsxDEV>
+      )(type, props, ...rest)
+    },
+  }
+})
+
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({
     children,
@@ -227,6 +290,50 @@ describe('Scene3DView sun-position scrubber (issue #76)', () => {
     expect(screen.getByText(/sun altitude/i)).toBeInTheDocument()
   })
 
+  // Regression coverage for PR #81 review finding 1 (see sunLightTarget.test.ts
+  // for the underlying Three.js world-matrix analysis): `DirectionalLight`'s
+  // `target` must be a genuine scene-graph node (rendered here via a
+  // `<primitive>` sibling), not the `target-position` JSX shorthand, which
+  // only ever sets an orphaned `Object3D`'s *local* position and never
+  // attaches it to the scene graph. `sunLightTarget.test.ts` verifies the
+  // real-`three` consequence of that distinction (a detached target's
+  // `matrixWorld` never updates); this test instead exercises the actual
+  // mounted `Scene3DView` component (mocking only `Canvas`/`OrbitControls`/
+  // `Text`, per this file's module doc) so a revert of the real fix in
+  // `Scene3DView.tsx` — reintroducing `target-position` — fails *this*
+  // suite too, not just the standalone `three`-object test.
+  it('wires the directionalLight to a real scene-graph target object, not a target-position prop (PR #81 review finding 1)', () => {
+    elementPropsLog.primitive.length = 0
+    elementPropsLog.directionalLight.length = 0
+
+    const { container } = render(<Scene3DView shapes={shapes} />)
+    const light = container.querySelector('directionallight')
+    expect(light).not.toBeNull()
+
+    // The buggy pattern used a `target-position` JSX prop shorthand, which
+    // React Three Fiber renders as a `target-position` DOM attribute in
+    // this mocked (plain react-dom) tree. Its absence confirms the fix's
+    // `<primitive object={sunTarget} .../>` + `target={sunTarget}` pattern
+    // is in place instead.
+    expect(light?.getAttribute('target-position')).toBeNull()
+
+    // The fix renders the light's target as its own `<primitive>` node — a
+    // real sibling in the R3F tree, not just a prop value on the light.
+    // Confirm it's the *same* target object the light's `target` prop was
+    // given, by comparing the real (un-serialized) prop values captured at
+    // the `jsx`/`jsxs`/`jsxDEV` factory level — see `elementPropsLog`'s doc
+    // comment above for why DOM attributes/properties can't distinguish
+    // this (a non-primitive prop collapses to `"[object Object]"` either
+    // way, so a bug that swapped in some *other* object as the target would
+    // be invisible to a plain DOM-attribute check).
+    expect(elementPropsLog.primitive).toHaveLength(1)
+    expect(elementPropsLog.directionalLight).toHaveLength(1)
+    const primitiveObject = elementPropsLog.primitive[0].object
+    const lightTarget = elementPropsLog.directionalLight[0].target
+    expect(primitiveObject).toBeDefined()
+    expect(lightTarget).toBe(primitiveObject)
+  })
+
   it('moving the time-of-day slider changes the rendered light position (shadows move)', () => {
     const { container } = render(<Scene3DView shapes={shapes} />)
     const before = container
@@ -285,8 +392,13 @@ describe('Scene3DView obstructions', () => {
   // tests for the same shape/tilt). Ground clicks in these tests use
   // points well outside that footprint so they aren't blocked by the
   // #69-review footprint-containment check — clicks *inside* it are
-  // covered separately below.
-  const OUTSIDE_FOOTPRINT = { x: 60, y: 60 }
+  // covered separately below. Deliberately asymmetric (x !== |y|, and
+  // even the signs differ) rather than e.g. `{ x: 60, y: 60 }` — a
+  // symmetric point can't catch an accidental x/y swap anywhere along the
+  // click -> `intersectGroundPlane` -> `handlePlace` ->
+  // `onObstructionsChange` chain, since `{ x: 60, y: 60 }` reads back
+  // identically either way.
+  const OUTSIDE_FOOTPRINT = { x: 60, y: -40 }
 
   it('places a tree (the default kind) on a ground click and shows its property panel', () => {
     const { container } = render(<Scene3DView shapes={shapes} />)

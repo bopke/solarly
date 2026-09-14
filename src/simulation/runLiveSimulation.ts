@@ -15,10 +15,10 @@ import {
   panelPowerOutput,
   sunAltitudeAzimuthToEnuDirection,
 } from '../solar-physics'
-import type { PanelSpec } from '../solar-physics'
 import {
   computeArrayPowerWithOcclusion,
   resolveArrayScenePanels,
+  toPanelSpec,
   type ArrayScenePanels,
 } from './sceneOcclusion'
 import type {
@@ -148,14 +148,6 @@ function requireFiniteInRange(
     throw new Error(
       `Invalid ${fieldName}: must be a finite number in [${min}, ${max}], got ${value}`,
     )
-  }
-}
-
-function toPanelSpec(array: PanelArrayConfig): PanelSpec {
-  return {
-    ratedWattsPeak: array.panelCount * array.wattsPerPanel,
-    efficiencyPercent: array.efficiencyPercent,
-    tempCoefficientPercentPerC: array.tempCoefficientPercentPerC,
   }
 }
 

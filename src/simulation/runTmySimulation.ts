@@ -28,6 +28,7 @@ import {
 import {
   computeArrayPowerWithOcclusion,
   resolveArrayScenePanels,
+  toPanelSpec,
   type ArrayScenePanels,
 } from './sceneOcclusion.ts'
 import type {
@@ -93,15 +94,6 @@ function combinedLossesPercent(
   const retention =
     (1 - systemLossesPercent / 100) * (1 - manualShadingPercent / 100)
   return (1 - retention) * 100
-}
-
-/** Converts a {@link PanelArrayConfig} into the `PanelSpec` shape `panelPowerOutput` expects. */
-function toPanelSpec(array: PanelArrayConfig) {
-  return {
-    ratedWattsPeak: array.panelCount * array.wattsPerPanel,
-    efficiencyPercent: array.efficiencyPercent,
-    tempCoefficientPercentPerC: array.tempCoefficientPercentPerC,
-  }
 }
 
 function daysInMonth(year: number, month: number): number {
