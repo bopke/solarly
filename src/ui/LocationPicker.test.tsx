@@ -493,4 +493,105 @@ describe('LocationPicker', () => {
       expect(mapInstances[0].resizeCallCount).toBeGreaterThan(0)
     })
   })
+
+  describe('controlled `location` prop (issue #87 / PR #95 review)', () => {
+    // These tests drive the controlled prop directly via `rerender`,
+    // simulating the same "reject the pick" wiring `App.tsx`'s
+    // `handleLocationChange` does: `onLocationChange` fires, but the
+    // parent only re-renders with an updated `location` prop when it
+    // decides to accept — rejecting means rerendering with the SAME
+    // `location` value as before. `App.tsx`'s own real wiring is covered
+    // end to end by src/App.test.tsx's "keeping LocationPicker in sync
+    // with a rejected location change" test.
+
+    it('keeps showing the last-accepted location when the parent does not update the controlled `location` prop after a pick', () => {
+      const onLocationChange = vi.fn()
+      const paris = { lat: 48.8566, lon: 2.3522 }
+      const { rerender } = render(
+        <LocationPicker onLocationChange={onLocationChange} location={paris} />,
+      )
+
+      expect(
+        screen.getByText(/Selected: 48\.85660, 2\.35220/),
+      ).toBeInTheDocument()
+      const marker = markerInstances[0]
+      expect(marker.lngLat).toEqual({ lat: 48.8566, lng: 2.3522 })
+
+      // User picks a new (genuinely different) location via the map...
+      const map = mapInstances[0]
+      act(() => {
+        map.handlers['click']?.forEach((handler) =>
+          handler({ lngLat: { lat: 41.9028, lng: 12.4964 } }),
+        )
+      })
+      expect(onLocationChange).toHaveBeenCalledWith({
+        lat: 41.9028,
+        lon: 12.4964,
+        utcOffsetHours: 1,
+      })
+
+      // ...but the parent rejects it (e.g. the user cancelled a confirm)
+      // and rerenders with the SAME `location` it already had.
+      rerender(
+        <LocationPicker onLocationChange={onLocationChange} location={paris} />,
+      )
+
+      // The picker's own readout and pin must have reverted to Paris, not
+      // stayed showing Rome — this is the exact desync the PR #95 review
+      // caught against the real App + LocationPicker tree.
+      expect(
+        screen.getByText(/Selected: 48\.85660, 2\.35220/),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText(/Selected: 41\.90280, 12\.49640/),
+      ).not.toBeInTheDocument()
+      expect(marker.lngLat).toEqual({ lat: 48.8566, lng: 2.3522 })
+    })
+
+    it('follows the controlled `location` prop to the newly picked value once the parent accepts it', () => {
+      const onLocationChange = vi.fn()
+      const paris = { lat: 48.8566, lon: 2.3522 }
+      const rome = { lat: 41.9028, lon: 12.4964 }
+      const { rerender } = render(
+        <LocationPicker onLocationChange={onLocationChange} location={paris} />,
+      )
+
+      const map = mapInstances[0]
+      act(() => {
+        map.handlers['click']?.forEach((handler) =>
+          handler({ lngLat: { lat: rome.lat, lng: rome.lon } }),
+        )
+      })
+
+      // Parent accepts: it re-renders with the new `location`.
+      rerender(
+        <LocationPicker onLocationChange={onLocationChange} location={rome} />,
+      )
+
+      expect(
+        screen.getByText(/Selected: 41\.90280, 12\.49640/),
+      ).toBeInTheDocument()
+      const marker = markerInstances[markerInstances.length - 1]
+      expect(marker.lngLat).toEqual({ lat: rome.lat, lng: rome.lon })
+    })
+
+    it('does not affect uncontrolled behavior when `location` is never supplied', () => {
+      // Existing/uncontrolled callers (or any test above that omits
+      // `location`) must see byte-identical behavior — the picker commits
+      // its own pick immediately, with no parent round-trip required.
+      const onLocationChange = vi.fn()
+      render(<LocationPicker onLocationChange={onLocationChange} />)
+
+      const map = mapInstances[0]
+      act(() => {
+        map.handlers['click']?.forEach((handler) =>
+          handler({ lngLat: { lat: 48.8566, lng: 2.3522 } }),
+        )
+      })
+
+      expect(
+        screen.getByText(/Selected: 48\.85660, 2\.35220/),
+      ).toBeInTheDocument()
+    })
+  })
 })

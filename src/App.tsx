@@ -115,6 +115,27 @@ function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
+// Below this distance, a resolved lat/lon change is treated as pin-drag
+// jitter or re-geocoding the same address rather than a genuinely new
+// location (issue #87) — chosen generously above typical GPS/marker-drag/
+// geocoder noise (a few meters) while staying well under the distance
+// between distinct addresses or buildings.
+const LOCATION_CHANGE_THRESHOLD_METERS = 30
+const EARTH_RADIUS_METERS = 6371000
+
+/** Great-circle distance between two lat/lon points, in meters (haversine). */
+function distanceMeters(a: ResolvedLocation, b: ResolvedLocation): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLon = toRad(b.lon - a.lon)
+  const lat1 = toRad(a.lat)
+  const lat2 = toRad(b.lat)
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(h))
+}
+
 function App() {
   const [location, setLocation] = useState<ResolvedLocation | undefined>(
     undefined,
@@ -228,7 +249,50 @@ function App() {
   // `sceneState` cleared immediately, rather than left to catch up once
   // the remounted instance's own `onStateChange` effect fires, so there's
   // no stale-summary flash in the sidebar.
+  //
+  // As of issue #87, this reset is guarded: it's skipped entirely for a
+  // near-identical lat/lon (pin jitter/re-geocoding noise), and confirmed
+  // with the user first when a scene is in progress for a genuine change —
+  // see the two guard clauses at the top of the function body below.
   function handleLocationChange(loc: ResolvedLocation) {
+    // A pin-drag nudge or re-geocoding the same address resolves to a
+    // near-identical lat/lon, not a genuinely new location — the
+    // destructive reset below must not fire for that (issue #87). Still
+    // adopt the (possibly marginally refined) coordinates; nothing else
+    // needs to change since the inputs are effectively the same.
+    if (
+      location &&
+      distanceMeters(location, loc) < LOCATION_CHANGE_THRESHOLD_METERS
+    ) {
+      setLocation(loc)
+      return
+    }
+
+    // A genuinely different location was picked while a 3D scene is
+    // already in progress — confirm before silently discarding traced
+    // shapes/configs/obstructions (issue #87). There's no reusable
+    // confirm/dialog *primitive* in src/ui or src/scene to reach for
+    // instead (`SceneEditorFlow` does render a `role="dialog"
+    // aria-modal="true"` full-screen overlay, but that's a step-flow
+    // surface, not a confirm component), so a native confirm() is used
+    // here rather than introducing a bespoke one just for this — see the
+    // PR #95 review's non-blocking note. Worth revisiting with a styled
+    // in-app confirm once a second call site wants one.
+    //
+    // The message spells out what Cancel does (keep the OLD location) —
+    // not just what Continue discards — since cancelling here rejects the
+    // whole location change, not just the scene reset; the picker's own
+    // displayed pin/coords are kept in sync with that via the `location`
+    // prop passed down to it below (PR #95 review's blocking finding).
+    if (
+      hasScene &&
+      !window.confirm(
+        'Changing location will discard your in-progress 3D scene design (traced shapes, per-shape configuration, and obstructions).\n\nContinue to change location, or Cancel to keep your current location and scene.',
+      )
+    ) {
+      return
+    }
+
     setLocation(loc)
     clearStaleResults()
     setIsSceneOpen(false)
@@ -346,6 +410,7 @@ function App() {
         locationSlot={
           <LocationPicker
             isHero={location === undefined}
+            location={location}
             onLocationChange={handleLocationChange}
           />
         }

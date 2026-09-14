@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NasaPowerNoDataError } from './data-sources'
 import type {
   HourlyPoint,
@@ -15,11 +15,17 @@ import type {
 // for that). The mock also records `click` handlers so tests below can
 // simulate the map-click fallback interaction to set a location, exactly
 // like src/ui/LocationPicker.test.tsx does.
-const { mapInstances } = vi.hoisted(() => {
+const { mapInstances, markerInstances } = vi.hoisted(() => {
   return {
     mapInstances: [] as {
       handlers: Record<string, ((...a: unknown[]) => void)[]>
     }[],
+    // Tracks real lngLat state (unlike a hardcoded-Paris stub) so tests
+    // can assert on where the pin actually ends up on screen — see the
+    // "cancelling a location change" regression test below (PR #95
+    // review's blocking finding: LocationPicker's own UI must not stay
+    // showing a rejected location).
+    markerInstances: [] as { lngLat: { lat: number; lng: number } }[],
   }
 })
 
@@ -41,11 +47,16 @@ vi.mock('maplibre-gl', () => ({
     remove() {}
   },
   Marker: class {
-    setLngLat() {
+    lngLat: { lat: number; lng: number } = { lat: 0, lng: 0 }
+    constructor() {
+      markerInstances.push(this)
+    }
+    setLngLat(coords: [number, number]) {
+      this.lngLat = { lng: coords[0], lat: coords[1] }
       return this
     }
     getLngLat() {
-      return { lat: 48.8566, lng: 2.3522 }
+      return this.lngLat
     }
     addTo() {
       return this
@@ -253,6 +264,23 @@ function clickUpdate() {
 describe('App', () => {
   beforeEach(() => {
     sceneFlowMounts.length = 0
+    mapInstances.length = 0
+    markerInstances.length = 0
+    // `handleLocationChange` (issue #87) prompts via the native `confirm()`
+    // before discarding an in-progress scene on a genuine location change.
+    // jsdom doesn't implement `confirm()` (calling it throws), so stub it
+    // here — defaulting to "confirmed" keeps every pre-existing test in
+    // this file (which don't care about the prompt itself) behaving as
+    // before. The "location change safety" describe block below overrides
+    // this per-test to exercise both outcomes.
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('renders the Solarly heading', () => {
@@ -542,6 +570,181 @@ describe('App', () => {
 
         // Only one mount so far, from the initial location being set.
         expect(sceneFlowMounts).toHaveLength(1)
+      })
+    })
+
+    describe('location-change safety guards (issue #87)', () => {
+      it('does not reset the scene for a near-identical lat/lon re-pick (pin jitter/re-geocoding noise)', () => {
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        // A tiny nudge — well under the threshold — e.g. re-geocoding the
+        // same address or a sub-meter pin drag.
+        setLocationViaMapClick(48.85661, 2.35221)
+
+        expect(sceneFlowMounts).toHaveLength(1)
+        expect(window.confirm).not.toHaveBeenCalled()
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Edit scene' }),
+        ).toBeInTheDocument()
+      })
+
+      it('prompts for confirmation before resetting an in-progress scene on a genuine location change, and keeps the scene if the user cancels', () => {
+        vi.stubGlobal(
+          'confirm',
+          vi.fn(() => false),
+        )
+
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        // A genuinely different location (Paris -> Rome).
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        expect(window.confirm).toHaveBeenCalledTimes(1)
+        // Cancelled: the scene survives untouched.
+        expect(sceneFlowMounts).toHaveLength(1)
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Edit scene' }),
+        ).toBeInTheDocument()
+      })
+
+      it('resets the scene on a genuine location change once the user confirms', () => {
+        vi.stubGlobal(
+          'confirm',
+          vi.fn(() => true),
+        )
+
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        expect(window.confirm).toHaveBeenCalledTimes(1)
+        expect(sceneFlowMounts).toHaveLength(2)
+        expect(
+          screen.queryByTestId('scene-editor-flow'),
+        ).not.toBeInTheDocument()
+        expect(
+          screen.getByRole('button', { name: 'Design in 3D' }),
+        ).toBeInTheDocument()
+      })
+
+      it('does not prompt for a genuine location change when no scene is in progress', () => {
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+
+        setLocationViaMapClick(41.9028, 12.4964)
+
+        expect(window.confirm).not.toHaveBeenCalled()
+      })
+
+      // PR #95 review, non-blocking note 1: the four pre-existing tests
+      // above only exercise 1.3 m (jitter) and 1105 km (genuine) — nowhere
+      // near LOCATION_CHANGE_THRESHOLD_METERS itself, so a units bug
+      // (meters vs. kilometers in `distanceMeters` or the threshold
+      // constant) would pass all of them unchanged. These two pin down the
+      // actual boundary with real distances straddling it.
+      it('treats a ~25m move (below the 30m threshold) as jitter — no prompt, no scene reset', () => {
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        // ~25.0 m due north of the above point (haversine-verified).
+        setLocationViaMapClick(48.8568248, 2.3522)
+
+        expect(window.confirm).not.toHaveBeenCalled()
+        expect(sceneFlowMounts).toHaveLength(1)
+        expect(screen.getByTestId('scene-editor-flow')).toBeInTheDocument()
+      })
+
+      it('treats a ~35m move (above the 30m threshold) as a genuine change — prompts and resets the scene once confirmed', () => {
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522)
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+        expect(sceneFlowMounts).toHaveLength(1)
+
+        // ~35.0 m due north of the above point (haversine-verified).
+        setLocationViaMapClick(48.8569148, 2.3522)
+
+        expect(window.confirm).toHaveBeenCalledTimes(1)
+        expect(sceneFlowMounts).toHaveLength(2)
+        expect(
+          screen.queryByTestId('scene-editor-flow'),
+        ).not.toBeInTheDocument()
+      })
+    })
+
+    // PR #95 review's blocking finding: `LocationPicker` was fully
+    // uncontrolled, so cancelling the confirm above only rejected the
+    // location change at the `App` level — the picker's own readout and
+    // map pin had already committed to the new (rejected) location, since
+    // nothing told it the change didn't happen. Fixed by making `App` pass
+    // its `location` state down to `LocationPicker` as a controlled value
+    // (see `LocationPickerProps.location`'s doc comment), so a rejected
+    // pick makes the picker's own UI revert too. This test renders the
+    // real `LocationPicker` (not just asserting on `App`'s internal state)
+    // specifically to catch that UI-level desync — reproduces the
+    // reviewer's exact repro (Paris -> cancel a change to Rome).
+    describe('keeping LocationPicker in sync with a rejected location change (PR #95 review)', () => {
+      it("reverts both the picker's displayed coordinates/pin AND App's own location state to the old location when the confirm is cancelled", () => {
+        vi.stubGlobal(
+          'confirm',
+          vi.fn(() => false),
+        )
+
+        render(<App />)
+        setLocationViaMapClick(48.8566, 2.3522) // Paris
+        fireEvent.click(screen.getByRole('button', { name: 'Design in 3D' }))
+        fireEvent.click(screen.getByRole('button', { name: 'set-scene-state' }))
+
+        // Genuine change while a scene is in progress -> confirm() fires
+        // and is rejected.
+        setLocationViaMapClick(41.9028, 12.4964) // Rome
+        expect(window.confirm).toHaveBeenCalledTimes(1)
+
+        // LocationPicker's OWN rendered readout must still show Paris, not
+        // Rome — this is the reviewer's exact repro ("Selected: 41.90280,
+        // 12.49640" after cancelling).
+        expect(screen.getByText(/48\.85660, 2\.35220/)).toBeInTheDocument()
+        expect(
+          screen.queryByText(/41\.90280, 12\.49640/),
+        ).not.toBeInTheDocument()
+
+        // The map pin (a real DOM/MapLibre concern, not just React state)
+        // must also have snapped back to Paris rather than staying at
+        // Rome.
+        const marker = markerInstances[markerInstances.length - 1]
+        expect(marker.lngLat).toEqual({ lat: 48.8566, lng: 2.3522 })
+
+        // And App's own `location` state — what actually feeds
+        // runTmySimulation/runLiveSimulation — is still Paris, not just
+        // "not Rome": hitting Update must run a Paris simulation, not
+        // silently produce a Paris-labeled-as-Rome (or worse, a Rome)
+        // result.
+        runTmySimulation.mockResolvedValueOnce(
+          makeTmyResult([makeMonth(1, 999)]),
+        )
+        clickUpdate()
+        expect(runTmySimulation).toHaveBeenCalledWith(
+          expect.objectContaining({
+            location: { lat: 48.8566, lon: 2.3522, utcOffsetHours: 0 },
+          }),
+        )
       })
     })
   })
