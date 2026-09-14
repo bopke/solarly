@@ -542,7 +542,11 @@ describe('SceneEditorFlow', () => {
   // traced yet) buttons are correctly excluded from the trap already.
   it('moves focus into the dialog on open', () => {
     render(<Harness />)
-    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus()
+    // Focuses the dialog container itself (labeled "Design in 3D"), not
+    // the first focusable descendant — see the effect's doc comment for
+    // why a screen reader hearing the dialog's own label first is more
+    // useful than hearing "Close, button" first.
+    expect(screen.getByRole('dialog', { name: 'Design in 3D' })).toHaveFocus()
   })
 
   it('traps Tab within the dialog, wrapping from the last focusable element back to the first', async () => {
@@ -553,6 +557,9 @@ describe('SceneEditorFlow', () => {
     const traceValid = screen.getByRole('button', { name: 'trace-valid' })
     const traceInvalid = screen.getByRole('button', { name: 'trace-invalid' })
 
+    // Initial focus is on the dialog container; the first real Tab press
+    // reaches the first focusable descendant, the Close button.
+    await user.tab()
     expect(closeButton).toHaveFocus()
     await user.tab()
     expect(traceValid).toHaveFocus()
@@ -567,6 +574,59 @@ describe('SceneEditorFlow', () => {
     // Shift+Tab from the first element wraps backward to the last.
     await user.tab({ shift: true })
     expect(traceInvalid).toHaveFocus()
+  })
+
+  it('skips content trapped inside a collapsed <details> when computing the last focusable element (issue #93 follow-up)', async () => {
+    // Reproduces the exact real-world shape the reviewer found: MapLibre's
+    // attribution control renders `<details><summary>…</summary><a
+    // href>…</a></details>`, collapsed by default. That `<a>` matches
+    // `FOCUSABLE_SELECTOR`, reports ordinary `display`/`visibility`/
+    // client-rect values, and yet a browser refuses to focus it while the
+    // `<details>` is closed — so it must not be treated as the trap's
+    // "last" element. The previous version of this test suite only ever
+    // exercised two plain `<button>`s in the stubbed step 1, which can't
+    // catch this class of bug (nothing about a plain button "looks
+    // focusable but isn't"). This test appends that exact structure as the
+    // last element in step 1's tab order, mimicking the real map content
+    // that sits alongside the stubbed tracing buttons in production.
+    const user = userEvent.setup()
+    render(<Harness />)
+
+    const tracingStep = screen.getByTestId('tracing-step')
+    const details = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = 'Attribution'
+    const link = document.createElement('a')
+    link.href = '#'
+    link.textContent = 'MapLibre'
+    details.appendChild(summary)
+    details.appendChild(link)
+    tracingStep.appendChild(details)
+    expect(details.open).toBe(false)
+
+    const closeButton = screen.getByRole('button', { name: 'Close' })
+
+    // Shift+Tab from the first focusable element (Close) must wrap to the
+    // genuinely-focusable last element — the `<summary>` disclosure
+    // toggle, which stays focusable regardless of the `<details>`'s open
+    // state — skipping the collapsed `<a>` entirely, and must not get
+    // stuck on Close.
+    await user.tab()
+    expect(closeButton).toHaveFocus()
+    await user.tab({ shift: true })
+    expect(closeButton).not.toHaveFocus()
+    expect(summary).toHaveFocus()
+
+    // Forward Tab from the last reachable element (the summary) wraps
+    // back to Close, rather than advancing into the unreachable `<a>` or
+    // leaving the dialog.
+    await user.tab()
+    expect(closeButton).toHaveFocus()
+
+    // Once expanded, the link becomes part of the trap's tab order too.
+    details.open = true
+    await user.tab({ shift: true })
+    expect(link).toHaveFocus()
   })
 
   it('restores focus to the previously focused element on close', () => {

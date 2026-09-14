@@ -80,6 +80,10 @@ const DEFAULT_SYSTEM_LOSSES_INPUT = '14'
  * (issue #93). `[tabindex]:not([tabindex="-1"])` covers the overlay's own
  * `tabIndex={-1}` fallback focus target being correctly *excluded* (a
  * programmatic-only focus target isn't part of the Tab sequence).
+ * `summary` (a browser-focusable element with no `tabindex` of its own),
+ * `[contenteditable]`, and the two `[controls]` media elements round out
+ * the standard native-focusable set the plain form/link/button tags above
+ * don't otherwise cover.
  */
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -87,6 +91,11 @@ const FOCUSABLE_SELECTOR = [
   'input:not([disabled])',
   'select:not([disabled])',
   'textarea:not([disabled])',
+  'summary',
+  '[contenteditable]',
+  'audio[controls]',
+  'video[controls]',
+  'iframe',
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ')
 
@@ -98,9 +107,37 @@ const FOCUSABLE_SELECTOR = [
  * layout-free test environment can't observe. Filtering on `aria-hidden`
  * instead keeps the focus trap's notion of "reachable" correct under both
  * a real browser and this project's jsdom-based component tests.
+ *
+ * Also excludes anything nested inside a closed (no `open` attribute)
+ * `<details>` — content there matches `FOCUSABLE_SELECTOR` (and reports
+ * ordinary `display`/`visibility`/client-rect values, so a CSS-visibility
+ * check alone wouldn't catch it either) but a browser refuses to actually
+ * move focus into it. Found via a real, reproducible case: MapLibre's
+ * attribution control renders `<details><summary>…</summary><a
+ * href>…</a></details>`, and when that widget is collapsed (its default
+ * state) the trap would otherwise compute that `<a>` as reachable, call
+ * `.focus()` on it, have the call silently no-op, and — since the Tab
+ * handler already called `preventDefault()` — leave focus stuck instead
+ * of wrapping. A closed-`<summary>` itself stays reachable: it's the
+ * disclosure widget's own toggle, always focusable regardless of the
+ * `<details>`'s open state.
  */
 function isReachable(element: HTMLElement): boolean {
-  return element.closest('[aria-hidden="true"]') === null
+  if (element.closest('[aria-hidden="true"]') !== null) return false
+  let child: Element = element
+  let node = element.parentElement
+  while (node) {
+    if (node instanceof HTMLDetailsElement && !node.open) {
+      // The `<details>`'s own (first) `<summary>` child is the disclosure
+      // widget's toggle — always reachable regardless of the `open`
+      // state. Anything else inside a closed `<details>` is not.
+      const ownSummary = node.querySelector(':scope > summary')
+      if (ownSummary !== child) return false
+    }
+    child = node
+    node = node.parentElement
+  }
+  return true
 }
 
 /** The Tab-reachable focusable elements currently inside `container`, in DOM order. */
@@ -409,15 +446,31 @@ export function SceneEditorFlow({
         ? document.activeElement
         : null
 
-    const initialFocusTarget = getFocusableElements(overlay)[0] ?? overlay
-    initialFocusTarget.focus()
+    // Focus the dialog container itself (it carries `role="dialog"` and
+    // `aria-label="Design in 3D"`) rather than the first focusable
+    // descendant (the Close button). A screen reader then announces the
+    // dialog's own label first, rather than "Close, button" — a more
+    // useful first thing to hear than the dismiss control. This still
+    // satisfies the "focus moves into the dialog" half of the pattern:
+    // `overlay` has `tabIndex={-1}` specifically so it can receive focus
+    // programmatically without joining the Tab sequence itself (see
+    // `FOCUSABLE_SELECTOR`'s doc comment).
+    overlay.focus()
 
+    // Save each sibling's own prior `aria-hidden` (most have none, but
+    // don't assume — a sibling could legitimately carry its own
+    // `aria-hidden` for unrelated reasons) so cleanup below restores it
+    // instead of unconditionally clearing an attribute this effect didn't
+    // set.
     const siblings = overlay.parentElement
       ? Array.from(overlay.parentElement.children).filter(
           (child): child is HTMLElement =>
             child !== overlay && child instanceof HTMLElement,
         )
       : []
+    const priorAriaHidden = new Map(
+      siblings.map((sibling) => [sibling, sibling.getAttribute('aria-hidden')]),
+    )
     for (const sibling of siblings) {
       sibling.setAttribute('inert', '')
       sibling.setAttribute('aria-hidden', 'true')
@@ -432,13 +485,16 @@ export function SceneEditorFlow({
       }
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
-      const isOutsideTrap = !overlay.contains(document.activeElement)
+      // The listener is registered on `overlay` itself, so it only ever
+      // fires for a Tab press while focus is already somewhere inside the
+      // dialog — there's no "focus is outside the trap" case to handle
+      // here (an earlier version of this check for that was dead code).
       if (event.shiftKey) {
-        if (isOutsideTrap || document.activeElement === first) {
+        if (document.activeElement === first) {
           event.preventDefault()
           last.focus()
         }
-      } else if (isOutsideTrap || document.activeElement === last) {
+      } else if (document.activeElement === last) {
         event.preventDefault()
         first.focus()
       }
@@ -449,7 +505,12 @@ export function SceneEditorFlow({
       overlay.removeEventListener('keydown', handleTabKey)
       for (const sibling of siblings) {
         sibling.removeAttribute('inert')
-        sibling.removeAttribute('aria-hidden')
+        const prior = priorAriaHidden.get(sibling)
+        if (prior === null || prior === undefined) {
+          sibling.removeAttribute('aria-hidden')
+        } else {
+          sibling.setAttribute('aria-hidden', prior)
+        }
       }
       const previouslyFocused = previouslyFocusedRef.current
       if (previouslyFocused && document.contains(previouslyFocused)) {
