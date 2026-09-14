@@ -58,7 +58,7 @@ describe('defaultFieldValuesFor', () => {
     expect(Number(values.tiltDeg)).toBe(Math.round(Math.abs(location.lat)))
   })
 
-  it('gives an equator ground array a north-facing default (lat >= 0 convention)', () => {
+  it('gives an equator ground array a south-facing default (lat >= 0 convention)', () => {
     const location: ConfigureShapesLocation = { lat: 0, lon: 10 }
     const values = defaultFieldValuesFor(groundArray, location)
 

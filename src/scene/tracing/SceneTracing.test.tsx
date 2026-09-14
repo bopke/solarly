@@ -20,6 +20,7 @@ const { FakeMap, FakeDraw, mapInstances, drawInstances } = vi.hoisted(() => {
     center: [number, number]
     zoom: number
     handlers: Record<string, Array<(event: unknown) => void>> = {}
+    setStyleCallCount = 0
     constructor(options: {
       style: unknown
       center: [number, number]
@@ -49,6 +50,7 @@ const { FakeMap, FakeDraw, mapInstances, drawInstances } = vi.hoisted(() => {
     }
     setStyle(style: unknown) {
       this.style = style
+      this.setStyleCallCount++
     }
     remove() {}
     emit(event: string, payload: unknown) {
@@ -178,6 +180,7 @@ describe('SceneTracing', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   describe('satellite tile fallback', () => {
@@ -263,10 +266,12 @@ describe('SceneTracing', () => {
         })
       })
 
-      // setStyle called at most once in practice — asserted indirectly:
-      // the notice text is still the tile-error one, not duplicated or
-      // reverted.
-      expect(screen.getAllByRole('status')).toHaveLength(1)
+      // Directly assert the fallback only actually happens once: a second
+      // (or later) satellite-source error must not call `map.setStyle`
+      // again — asserting on `getAllByRole('status')`'s length alone is
+      // tautological here, since this component only ever renders at most
+      // one status element regardless of how many times it falls back.
+      expect(mapInstances[0].setStyleCallCount).toBe(1)
     })
 
     // Regression coverage for the bug found in code review: mapbox-gl-draw's
@@ -328,6 +333,91 @@ describe('SceneTracing', () => {
         'https://tiles.openfreemap.org/styles/liberty',
       )
       expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
+
+    // Regression coverage: when the `mapboxApiKey` prop is omitted entirely
+    // (as opposed to passed as `""`, the only case the tests above cover),
+    // `SceneTracing` must fall through to `readMapboxApiKey()`'s real
+    // `import.meta.env.VITE_MAPBOX_API_KEY` lookup rather than treating a
+    // missing prop the same as an explicit empty string.
+    it('reads the Mapbox API key from VITE_MAPBOX_API_KEY when the mapboxApiKey prop is omitted', () => {
+      vi.stubEnv('VITE_MAPBOX_API_KEY', 'env-token-456')
+
+      render(<SceneTracing center={CENTER} onShapesChange={vi.fn()} />)
+
+      const style = mapInstances[0].style as {
+        sources: Record<string, { tiles: string[] }>
+      }
+      expect(style.sources['mapbox-satellite'].tiles[0]).toContain(
+        'access_token=env-token-456',
+      )
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
+
+    it('treats a whitespace-only API key the same as no key at all', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="   "
+        />,
+      )
+
+      expect(mapInstances[0].style).toBe(
+        'https://tiles.openfreemap.org/styles/liberty',
+      )
+      expect(screen.getByRole('status')).toHaveTextContent(
+        /no mapbox api key is configured/i,
+      )
+    })
+  })
+
+  describe('map setup', () => {
+    it('passes center and initialZoom through to the underlying map', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="token"
+          initialZoom={15}
+        />,
+      )
+
+      expect(mapInstances[0].center).toEqual([CENTER.lon, CENTER.lat])
+      expect(mapInstances[0].zoom).toBe(15)
+    })
+
+    it('defaults initialZoom to building-level (19) when omitted', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="token"
+        />,
+      )
+
+      expect(mapInstances[0].zoom).toBe(19)
+    })
+
+    it('tears down its map/draw event listeners and removes the map on unmount', () => {
+      const { unmount } = render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="token"
+        />,
+      )
+
+      const map = mapInstances[0]
+      const removeSpy = vi.spyOn(map, 'remove')
+      expect(map.handlers['draw.create']?.length).toBeGreaterThan(0)
+
+      unmount()
+
+      expect(removeSpy).toHaveBeenCalledTimes(1)
+      expect(map.handlers['draw.create']).toEqual([])
+      expect(map.handlers['draw.update']).toEqual([])
+      expect(map.handlers['draw.delete']).toEqual([])
     })
   })
 
@@ -413,6 +503,29 @@ describe('SceneTracing', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Draw polygon' }))
 
       expect(drawInstances[0].lastMode).toBe('draw_polygon')
+    })
+
+    // `formatArea`'s "k m²" branch (>= 1000 m²): `VALID_SQUARE` is a ~100m
+    // square (well above the threshold), unlike the other fixtures in this
+    // file which are either near-zero (`TINY`) or don't have their
+    // displayed area asserted on at all.
+    it('displays a large shape\'s area in the abbreviated "k m²" form', () => {
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={vi.fn()}
+          mapboxApiKey="token"
+        />,
+      )
+
+      let id = ''
+      act(() => {
+        id = drawInstances[0].simulateCreate(VALID_SQUARE)
+      })
+
+      expect(screen.getByTestId(`shape-${id}`)).toHaveTextContent(
+        /\d+(\.\d)?k m²/,
+      )
     })
   })
 
@@ -696,6 +809,39 @@ describe('SceneTracing', () => {
         [expect.objectContaining({ id })],
         false,
       )
+    })
+
+    it('lets an invalid shape be re-tagged, without clearing its validation error or including it in the output', () => {
+      const onShapesChange = vi.fn()
+      render(
+        <SceneTracing
+          center={CENTER}
+          onShapesChange={onShapesChange}
+          mapboxApiKey="token"
+        />,
+      )
+
+      let id = ''
+      act(() => {
+        id = drawInstances[0].simulateCreate(BOWTIE)
+      })
+
+      const item = screen.getByTestId(`shape-${id}`)
+      fireEvent.change(within(item).getByRole('combobox'), {
+        target: { value: 'ground-array' },
+      })
+
+      // The kind change is reflected...
+      expect(drawInstances[0].get(id)?.properties?.kind).toBe('ground-array')
+      expect(
+        within(screen.getByTestId(`shape-${id}`)).getByRole('combobox'),
+      ).toHaveValue('ground-array')
+      // ...but re-tagging alone doesn't fix the underlying geometry
+      // problem, so the shape stays flagged and excluded from the output.
+      expect(
+        within(screen.getByTestId(`shape-${id}`)).getByRole('alert'),
+      ).toHaveTextContent(/cross themselves/i)
+      expect(onShapesChange).toHaveBeenLastCalledWith([], true)
     })
   })
 
