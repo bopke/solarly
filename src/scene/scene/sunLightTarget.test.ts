@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { computeSunLightState } from './sunDirection'
+import { computeSunLightState } from './sunScrubber'
 
 /**
  * Regression test for PR #81 review finding 1: `Scene3DView`'s

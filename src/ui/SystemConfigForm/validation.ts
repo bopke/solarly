@@ -1,4 +1,7 @@
+import { azimuthCompassLabel } from '../../shared/azimuthCompassLabel'
 import type { SystemConfig, SystemConfigFieldErrors } from './types'
+
+export { azimuthCompassLabel }
 
 /** Raw (string) form field values, one per editable `SystemConfig` field. */
 export type SystemConfigFieldValues = Record<
@@ -105,20 +108,6 @@ export function validateAll(
     }
   }
   return errors
-}
-
-/**
- * Compass label for a given azimuth in degrees, e.g. 180 -> "S", 135 -> "SE".
- * Uses the 8-point compass; out-of-range or non-finite input returns `''`.
- */
-export function azimuthCompassLabel(azimuthDeg: number): string {
-  if (!Number.isFinite(azimuthDeg)) {
-    return ''
-  }
-  const points = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-  const normalized = ((azimuthDeg % 360) + 360) % 360
-  const index = Math.round(normalized / 45) % 8
-  return points[index]
 }
 
 /**

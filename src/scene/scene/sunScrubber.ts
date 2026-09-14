@@ -1,49 +1,23 @@
 /**
- * Pure helpers converting `solar-physics/sunPosition`'s altitude/azimuth
- * output into the ENU (x=east, y=north, z=up) unit direction vector this
- * scene renders in, plus a small day-of-year/hour-of-day <-> `Date`
- * conversion for the sun-position scrubber (issue #76). Kept free of
- * React/Three.js imports, mirroring `geometryBuilders.ts`'s split, so the
- * conversion math is directly unit-testable under Vitest without a WebGL
- * context.
+ * Sun-position-scrubber helpers (issue #76): computing the scrubber-driven
+ * sun-light state for a location and moment, plus a small day-of-year/
+ * hour-of-day <-> `Date` conversion. Kept free of React/Three.js imports,
+ * mirroring `geometryBuilders.ts`'s split, so the conversion math is
+ * directly unit-testable under Vitest without a WebGL context.
+ *
+ * The altitude/azimuth -> ENU direction conversion itself lives in
+ * `solar-physics/sunDirection.ts`'s `sunAltitudeAzimuthToEnuDirection` — it
+ * used to be duplicated here (this file was originally named
+ * `sunDirection.ts`), but since `solar-physics/` is a layer both `scene/`
+ * and `simulation/` can import from, there's no boundary reason for
+ * `scene/scene/` to keep its own copy of that specific conversion (see
+ * issue #91, item 4; `simulation/`'s copy in `solar-physics/sunDirection.ts`
+ * predates this fix and stays there since it's already the correct layer).
  */
 
 import { sunPosition } from '../../solar-physics/sunPosition'
+import { sunAltitudeAzimuthToEnuDirection } from '../../solar-physics/sunDirection'
 import type { Vec3 } from '../derive'
-
-/**
- * Converts a sun altitude/azimuth pair (as returned by
- * `solar-physics/sunPosition`) into a unit ENU direction vector pointing
- * *from the scene toward the sun* — i.e. the direction a `DirectionalLight`
- * placed along this vector (scaled out from the scene) should shine back
- * *against* to illuminate the scene the way the real sun would.
- *
- * `sunPosition`'s `azimuth` is degrees clockwise from true north (0-360,
- * see its own doc comment) — the same convention
- * `scene/derive/polygonToExtrusionGeometry.ts` and `geometryBuilders.ts`'s
- * `liftToPlane` already use for a roof's slope direction
- * (`{ x: sin(azimuthRad), y: cos(azimuthRad) }`), so this reuses that
- * exact `x = sin, y = cos` mapping rather than inventing a new one:
- * azimuth 0 (north) -> +y, 90 (east) -> +x, 180 (south) -> -y, 270
- * (west) -> -x. `altitude` is degrees above the horizon (negative when
- * the sun is below it); `cos(altitude)` scales the horizontal (x, y)
- * component down as the sun climbs toward zenith, and `sin(altitude)`
- * gives the vertical (z) component, so at altitude=90 (straight up) this
- * correctly collapses to `(0, 0, 1)` regardless of azimuth.
- */
-export function sunAltitudeAzimuthToEnuDirection(
-  altitudeDeg: number,
-  azimuthDeg: number,
-): Vec3 {
-  const altRad = (altitudeDeg * Math.PI) / 180
-  const azRad = (azimuthDeg * Math.PI) / 180
-  const horizontal = Math.cos(altRad)
-  return {
-    x: horizontal * Math.sin(azRad),
-    y: horizontal * Math.cos(azRad),
-    z: Math.sin(altRad),
-  }
-}
 
 /** One scrubber-driven sun-light configuration, computed for a location and moment. */
 export interface SunLightState {
